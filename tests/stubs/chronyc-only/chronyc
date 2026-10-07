@@ -1,0 +1,8 @@
+#!/bin/bash
+# Stub for chronyc -c / -n -c: answers from the test fixtures
+case " $* " in
+    *" tracking "*) cat "${TRACKING}" ;;
+    *" serverstats "*) cat /tests/fixtures/serverstats.csv ;;
+    *" clients "*) cat /tests/fixtures/clients.csv ;;
+    *) exit 1 ;;
+esac

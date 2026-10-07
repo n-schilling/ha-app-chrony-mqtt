@@ -1,0 +1,45 @@
+name: Chrony NTP + MQTT
+version: "1.3.1"
+slug: chrony_ntp
+description: Local NTP server (chrony) with its key figures as Home Assistant sensors via MQTT discovery
+url: https://github.com/n-schilling/ha-app-chrony-mqtt
+startup: system
+arch:
+  - aarch64
+  - amd64
+init: false
+privileged:
+  - SYS_TIME
+services:
+  - mqtt:need
+ports:
+  123/udp: 123
+ports_description:
+  123/udp: NTP (Network Time Protocol)
+options:
+  set_system_clock: true
+  mode: pool
+  ntp_pool: pool.ntp.org
+  ntp_server:
+    - 0.pool.ntp.org
+    - 1.pool.ntp.org
+    - 2.pool.ntp.org
+  allowed_networks: []
+  serve_when_offline: false
+  mqtt_interval: 300
+  active_window: 3900
+  discovery_prefix: homeassistant
+  log_level: info
+schema:
+  set_system_clock: bool
+  ntp_pool: match(^[A-Za-z0-9.:-]*$)?
+  ntp_server:
+    - match(^[A-Za-z0-9.:-]+$)?
+  mode: list(pool|server)
+  allowed_networks:
+    - match(^[0-9a-fA-F:.]+(/[0-9]{1,3})?$)
+  serve_when_offline: bool
+  mqtt_interval: int(60,3600)
+  active_window: int(300,86400)
+  discovery_prefix: str
+  log_level: list(info|warning|error)

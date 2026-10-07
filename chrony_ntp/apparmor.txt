@@ -1,0 +1,31 @@
+#include <tunables/global>
+
+# chronyd serves NTP and may set the host clock (SYS_TIME); the publisher
+# reads chronyc and talks to the MQTT broker
+profile chrony_ntp flags=(attach_disconnected,mediate_deleted) {
+  #include <abstractions/base>
+
+  capability chown,
+  capability dac_override,
+  capability dac_read_search,
+  capability fowner,
+  capability kill,
+  capability net_bind_service,
+  capability setgid,
+  capability setuid,
+  capability sys_nice,
+  capability sys_resource,
+  capability sys_time,
+
+  network inet,
+  network inet6,
+  network unix,
+  network netlink raw,
+
+  # s6 stops its services; the Supervisor stops the container
+  signal (send, receive),
+
+  file,
+  deny /proc/sys/kernel/** w,
+  deny /sys/** w,
+}

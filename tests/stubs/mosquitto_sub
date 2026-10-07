@@ -1,0 +1,23 @@
+#!/bin/bash
+# Stub for mosquitto_sub. With --retained-only it prints the retained
+# messages matching -t, from ${RETAINED} and from what was published (the
+# last payload per topic, empty = deleted), each followed by an empty line
+# like the payloads that end in a newline. Otherwise it is the availability
+# connection: records its arguments and stays connected until stopped.
+filter='' retained=0 args="$*"
+while (( $# )); do
+    case "$1" in
+        -t) filter=$2; shift ;;
+        --retained-only) retained=1 ;;
+    esac
+    shift
+done
+if (( retained )); then
+    regex="^$(sed -e 's/[].[*^$()|?{}]/\\&/g' -e 's/+/[^\/]*/g' -e 's/#$/.*/' <<< "${filter}")\$"
+    cat "${RETAINED:-/dev/null}" "${PUBLISHED}" 2>/dev/null \
+        | awk -F '\t' '{ v[$1] = $2 } END { for (t in v) if (v[t] != "") print t "\t" v[t] }' \
+        | awk -F '\t' -v re="${regex}" '$1 ~ re { print; print "" }'
+    exit 0
+fi
+printf '%s\n' "${args}" >> "${PUBLISHED}.sub"
+exec sleep 600

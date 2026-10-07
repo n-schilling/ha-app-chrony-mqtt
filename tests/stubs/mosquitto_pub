@@ -1,0 +1,16 @@
+#!/bin/bash
+# Stub for mosquitto_pub -r -t <topic> -s|-n: records "topic<TAB>payload".
+# Like the real one it refuses an empty message on stdin.
+topic='' null=0
+while (( $# )); do
+    [[ "$1" == -t ]] && topic=$2
+    [[ "$1" == -n ]] && null=1
+    shift
+done
+if (( null )); then
+    payload=''
+else
+    payload=$(cat)
+    [[ -n "${payload}" ]] || { echo 'Error: Zero length input.' >&2; exit 1; }
+fi
+printf '%s\t%s\n' "${topic}" "${payload}" >> "${PUBLISHED}"

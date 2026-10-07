@@ -1,0 +1,41 @@
+#!/command/with-contenv bashio
+# shellcheck shell=bash
+readonly CHRONY_CONF='/etc/chrony/chrony.conf'
+declare mode
+declare -a serverlist
+
+if bashio::config.equals 'mode' 'pool' && bashio::config.is_empty 'ntp_pool'; then
+    bashio::exit.nok 'mode is pool, but ntp_pool is empty'
+fi
+if bashio::config.equals 'mode' 'server' && bashio::config.is_empty 'ntp_server'; then
+    bashio::exit.nok 'mode is server, but ntp_server is empty'
+fi
+
+mode=$(bashio::config 'mode')
+bashio::log.info "NTP mode: ${mode}"
+for server in $(bashio::config "ntp_${mode}"); do
+    echo "${mode} ${server} iburst" >> ${CHRONY_CONF}
+    serverlist+=("${server}")
+done
+echo "initstepslew 10 ${serverlist[*]}" >> ${CHRONY_CONF}
+
+# Who may take time from this server; the schema only lets addresses and
+# prefixes through. Empty serves every client that reaches port 123.
+declare -a networks=()
+if bashio::config.has_value 'allowed_networks'; then
+    mapfile -t networks < <(bashio::config 'allowed_networks' | sed '/^null$/d; /^$/d')
+fi
+if (( ${#networks[@]} == 0 )); then
+    echo 'allow all' >> ${CHRONY_CONF}
+    bashio::log.info 'Serving time to every client'
+else
+    printf 'allow %s\n' "${networks[@]}" >> ${CHRONY_CONF}
+    bashio::log.info "Serving time to ${networks[*]}"
+fi
+
+# Without any upstream source, keep serving the host clock at stratum 10, so
+# clients stay in step with each other
+if bashio::config.true 'serve_when_offline'; then
+    echo 'local stratum 10' >> ${CHRONY_CONF}
+    bashio::log.info 'Serving the local clock when no upstream source is reachable'
+fi

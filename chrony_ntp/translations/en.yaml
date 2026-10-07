@@ -1,0 +1,33 @@
+configuration:
+  set_system_clock:
+    name: Set system clock
+    description: Let chrony adjust the host clock. Off makes chrony only serve time.
+  mode:
+    name: Mode
+    description: "pool: one pool name that resolves to several servers; server: a list of individual servers."
+  ntp_pool:
+    name: NTP pool
+    description: Pool used in pool mode.
+  ntp_server:
+    name: NTP servers
+    description: Servers used in server mode.
+  allowed_networks:
+    name: Allowed networks
+    description: Networks that may take time from this server, e.g. 192.168.1.0/24; empty serves every client.
+  serve_when_offline:
+    name: Serve when offline
+    description: Keep serving the host clock at stratum 10 when no upstream server is reachable.
+  mqtt_interval:
+    name: MQTT interval
+    description: Seconds between two updates of the sensors.
+  active_window:
+    name: Active window
+    description: Seconds since its last request within which a client counts as active.
+  discovery_prefix:
+    name: MQTT discovery prefix
+    description: Prefix Home Assistant listens on for MQTT discovery.
+  log_level:
+    name: Log level
+    description: "How much the app writes to its log: info, warning or error."
+network:
+  123/udp: NTP (Network Time Protocol)

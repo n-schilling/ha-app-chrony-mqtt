@@ -1,0 +1,33 @@
+configuration:
+  set_system_clock:
+    name: Systemuhr stellen
+    description: Chrony stellt die Uhr des Hosts. Aus bedeutet, dass Chrony die Zeit nur verteilt.
+  mode:
+    name: Modus
+    description: "pool: ein Pool-Name, der auf mehrere Server zeigt; server: eine Liste einzelner Server."
+  ntp_pool:
+    name: NTP-Pool
+    description: Pool im Modus pool.
+  ntp_server:
+    name: NTP-Server
+    description: Server im Modus server.
+  allowed_networks:
+    name: Erlaubte Netze
+    description: Netze, die sich bei diesem Server die Zeit holen dürfen, z. B. 192.168.1.0/24; leer bedient alle.
+  serve_when_offline:
+    name: Ohne Internet weiter verteilen
+    description: Verteilt die Uhr des Hosts mit Stratum 10 weiter, wenn kein Upstream-Server erreichbar ist.
+  mqtt_interval:
+    name: MQTT-Intervall
+    description: Sekunden zwischen zwei Aktualisierungen der Sensoren.
+  active_window:
+    name: Aktiv-Fenster
+    description: Sekunden seit der letzten Anfrage, in denen ein Client als aktiv zählt.
+  discovery_prefix:
+    name: MQTT-Discovery-Präfix
+    description: Präfix, auf dem Home Assistant MQTT-Discovery empfängt.
+  log_level:
+    name: Log-Level
+    description: "Wie viel die App in ihr Log schreibt: info, warning oder error."
+network:
+  123/udp: NTP (Network Time Protocol)

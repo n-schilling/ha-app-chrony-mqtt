@@ -1,0 +1,95 @@
+name: CI
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: App configuration
+        uses: frenck/action-addon-linter@b9cfd1bc62ba60d2c4fc96317b5f7ada5923f4a7 # v2.21.1
+        with:
+          path: ./chrony_ntp
+      - name: Changelog has the version
+        run: .github/scripts/changelog-section.sh chrony_ntp/CHANGELOG.md "$(yq -r '.version' chrony_ntp/config.yaml)" > /dev/null
+      - name: Shell scripts
+        run: >-
+          shellcheck --shell=bash --severity=warning --external-sources
+          chrony_ntp/rootfs/etc/s6-overlay/s6-rc.d/*/run
+          chrony_ntp/rootfs/usr/local/lib/mqtt-device.sh
+          chrony_ntp/rootfs/etc/s6-overlay/s6-rc.d/chrony/finish
+          tests/test_app.sh tests/test_broker.sh tests/stubs/chronyc tests/stubs/mosquitto_*
+
+  test:
+    name: Build and test (${{ matrix.arch }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            platform: linux/amd64
+          - arch: aarch64
+            platform: linux/arm64
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - name: Build
+        env:
+          ARCH: ${{ matrix.arch }}
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          base=$(yq -r ".build_from.${ARCH}" chrony_ntp/build.yaml)
+          version=$(yq -r '.version' chrony_ntp/config.yaml)
+          docker buildx build --platform "${PLATFORM}" --build-arg "BUILD_FROM=${base}" \
+            --build-arg "BUILD_VERSION=${version}" --load -t chrony-mqtt:test chrony_ntp
+      - name: Test
+        env:
+          PLATFORM: ${{ matrix.platform }}
+        run: >-
+          docker run --rm --network none --platform "${PLATFORM}"
+          -v "${PWD}/tests:/tests:ro" --entrypoint bash chrony-mqtt:test
+          /tests/test_app.sh
+
+  broker:
+    name: Against a real MQTT broker
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build
+        run: |
+          base=$(yq -r '.build_from.amd64' chrony_ntp/build.yaml)
+          version=$(yq -r '.version' chrony_ntp/config.yaml)
+          docker build --build-arg "BUILD_FROM=${base}" --build-arg "BUILD_VERSION=${version}" \
+            -t chrony-mqtt:test chrony_ntp
+      - name: Start the broker
+        run: |
+          docker network create ci
+          docker run -d --name broker --network ci \
+            -v "${PWD}/tests/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro" eclipse-mosquitto:2.0.22
+      - name: Test
+        run: >-
+          docker run --rm --network ci --add-host supervisor:127.0.0.1 -v "${PWD}/tests:/tests:ro" --entrypoint bash
+          chrony-mqtt:test /tests/test_broker.sh
+      - name: Broker log
+        if: failure()
+        run: docker logs broker
+

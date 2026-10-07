@@ -1,0 +1,201 @@
+#!/command/with-contenv bashio
+# shellcheck shell=bash
+# ==============================================================================
+# Publishes chrony's key figures through MQTT discovery
+# ==============================================================================
+readonly NODE='chrony_ntp'
+readonly DEV_NAME='Chrony NTP Server'
+readonly APP_NAME='Chrony NTP + MQTT'
+readonly SUPPORT_URL='https://github.com/n-schilling/ha-app-chrony-mqtt'
+readonly TOPIC="chrony/${NODE}"
+readonly AVAIL="${TOPIC}/availability"
+# The app's slug, e.g. 0a032ba2_chrony_ntp; the Supervisor names the
+# container's host after it
+readonly SLUG=${HOSTNAME//-/_}
+MODEL="chrony $(chronyd --version | grep -o '[0-9][0-9.]*' | head -1)"
+readonly MODEL
+
+PREFIX=$(bashio::config 'discovery_prefix')
+DISCOVERY_PREFIX=${PREFIX}
+INTERVAL=$(bashio::config 'mqtt_interval')
+WINDOW=$(bashio::config 'active_window')
+EXPIRE=$((INTERVAL * 3))
+# shellcheck disable=SC2034  # used by mqtt-device.sh
+readonly PREFIX DISCOVERY_PREFIX INTERVAL WINDOW EXPIRE
+bashio::config.has_value 'log_level' && bashio::log.level "$(bashio::config 'log_level')"
+
+bashio::config.require 'mqtt_interval'
+bashio::services.available 'mqtt' || bashio::exit.nok 'No MQTT service available'
+
+declare -a MQ
+MQ=(-h "$(bashio::services mqtt 'host')" -p "$(bashio::services mqtt 'port')")
+if bashio::var.has_value "$(bashio::services mqtt 'username')"; then
+    MQ+=(-u "$(bashio::services mqtt 'username')" -P "$(bashio::services mqtt 'password')")
+fi
+readonly MQ
+
+pub() { mosquitto_pub "${MQ[@]}" -r -t "$1" -s; }
+
+# shellcheck source=../../../../usr/local/lib/mqtt-device.sh
+source /usr/local/lib/mqtt-device.sh
+
+# Waits in the background, so the stop trap runs at once and not only after
+# the interval (the tests bring their own pause)
+declare -F pause > /dev/null || pause() { sleep "$1" & wait $!; }
+
+# --- Availability ---------------------------------------------------------------
+# A connection held open with a last will: if the app dies, the broker marks
+# the entities unavailable. A regular stop publishes "offline" itself.
+HOLD_SUB=''
+hold_availability() {
+    trap '[[ -n "${HOLD_SUB}" ]] && kill "${HOLD_SUB}" 2>/dev/null; exit 0' TERM
+    while true; do
+        mosquitto_sub "${MQ[@]}" -i "${SLUG}-availability" -q 1 -t "${AVAIL}" \
+            --will-topic "${AVAIL}" --will-payload offline --will-retain --will-qos 1 \
+            > /dev/null 2>&1 &
+        HOLD_SUB=$!
+        wait "${HOLD_SUB}"
+        sleep 10
+    done
+}
+
+HOLDER=''
+stop() {
+    trap - EXIT TERM INT
+    printf 'offline' | pub "${AVAIL}"
+    [[ -n "${HOLDER}" ]] && kill "${HOLDER}" 2>/dev/null
+    exit 0
+}
+
+# --- Discovery, once and retained ---------------------------------------------
+# One message for the device with all entities; discover() adds one entity
+# $1 object_id  $2 display name  $3 platform  $4 extra JSON keys
+COMPONENTS='{}'
+discover() {
+    COMPONENTS=$(jq -c --arg k "$1" --arg name "$2" --arg p "$3" --arg uid "${NODE}_$1" \
+        --arg stt "${TOPIC}/$1" --argjson exp "${EXPIRE}" --argjson extra "${4:-\{\}}" \
+        '.[$k] = ({platform:$p, name:$name, unique_id:$uid, state_topic:$stt, expire_after:$exp} + $extra)' \
+        <<< "${COMPONENTS}")
+}
+
+publish_discovery() {
+    bashio::log.info 'Sending MQTT discovery...'
+    COMPONENTS='{}'
+    discover clients        'Clients'              sensor \
+        '{"icon":"mdi:lan-connect","state_class":"measurement",
+          "json_attributes_topic":"chrony/chrony_ntp/clients/attr"}'
+    discover clients_active 'Active clients'       sensor \
+        '{"icon":"mdi:lan-pending","state_class":"measurement"}'
+    discover ntp_requests   'NTP requests'         sensor \
+        '{"icon":"mdi:counter","state_class":"total_increasing"}'
+    discover ntp_dropped    'NTP requests dropped' sensor \
+        '{"icon":"mdi:package-variant-remove","state_class":"total_increasing"}'
+    discover stratum        'Stratum'              sensor \
+        '{"icon":"mdi:layers-triple","state_class":"measurement"}'
+    discover last_sync      'Last upstream sync'   sensor \
+        '{"device_class":"timestamp",
+          "value_template":"{{ value | int | timestamp_custom(\"%Y-%m-%dT%H:%M:%S+00:00\", false) }}"}'
+    discover system_offset  'System offset'        sensor \
+        '{"unit_of_measurement":"ms","state_class":"measurement",
+          "suggested_display_precision":3,"icon":"mdi:clock-alert-outline"}'
+    discover rms_offset     'RMS offset'           sensor \
+        '{"unit_of_measurement":"ms","state_class":"measurement",
+          "suggested_display_precision":3,"icon":"mdi:sine-wave"}'
+    discover root_dispersion 'Root dispersion'     sensor \
+        '{"unit_of_measurement":"ms","state_class":"measurement",
+          "suggested_display_precision":3,"icon":"mdi:arrow-expand-horizontal"}'
+    discover reference      'Reference source'     sensor '{"icon":"mdi:server-network"}'
+    discover sync_problem   'Sync problem'         binary_sensor \
+        '{"device_class":"problem","payload_on":"ON","payload_off":"OFF"}'
+    md_announce "${NODE}" "$(jq -nc --argjson c "${COMPONENTS}" --arg avail "${AVAIL}" \
+        --arg dev "${DEV_NAME}" --arg model "${MODEL}" --arg cfg "homeassistant://hassio/addon/${SLUG}/info" \
+        --arg app "${APP_NAME}" --arg version "${APP_VERSION:-unknown}" --arg url "${SUPPORT_URL}" \
+        '{device:{identifiers:["chrony_ntp"], name:$dev, manufacturer:"chrony", model:$model,
+                  configuration_url:$cfg},
+          origin:{name:$app, sw_version:$version, support_url:$url},
+          availability_topic:$avail, qos:1, components:$c}')" \
+        "${PREFIX}/+/${NODE}/+/config"
+}
+
+ms() { awk -v v="$1" 'BEGIN{printf "%.4f", v*1000}'; }
+
+publish_state() {
+    # Fields of `chronyc -c tracking`; _ marks the ones not published
+    local refid refname stratum reftime cur_off rms_off rdisp leap
+    IFS=, read -r refid refname stratum reftime cur_off _ rms_off \
+        _ _ _ _ rdisp _ leap < <(chronyc -c tracking) || return 1
+
+    local ntp_rx ntp_drop
+    IFS=, read -r ntp_rx ntp_drop _ < <(chronyc -c serverstats) || return 1
+
+    # --- Count clients and build the attribute list ---
+    local ip pkts drop last
+    local total=0 active=0 list='[]'
+    while IFS=, read -r ip pkts drop _ _ last _; do
+        [[ -z "${ip}" ]] && continue
+        [[ "${ip}" == "127.0.0.1" || "${ip}" == "::1" ]] && continue
+        total=$((total + 1))
+        # 4294967295 is chrony's placeholder for "never"
+        if [[ "${last}" -lt 4294967295 && "${last}" -le "${WINDOW}" ]]; then
+            active=$((active + 1))
+        fi
+        list=$(jq -c --arg ip "${ip}" --argjson r "${pkts}" \
+                     --argjson d "${drop}" --argjson l "${last}" \
+                 '. + [{ip:$ip, requests:$r, dropped:$d, last_seen:$l}]' <<< "${list}")
+    done < <(chronyc -n -c clients)
+
+    # 7F7F0101 is chrony's own clock (serve_when_offline): no upstream source
+    local problem=OFF
+    [[ "${stratum}" -ge 16 || "${leap}" != "Normal" || "${refid}" == 7F7F0101 ]] && problem=ON
+
+    local t="${TOPIC}"
+    printf '%s' "${total}"                  | pub "${t}/clients"
+    printf '%s' "${active}"                 | pub "${t}/clients_active"
+    printf '%s' "${ntp_rx}"                 | pub "${t}/ntp_requests"
+    printf '%s' "${ntp_drop}"               | pub "${t}/ntp_dropped"
+    printf '%s' "${stratum}"                | pub "${t}/stratum"
+    printf '%s' "$(ms "${cur_off}")"        | pub "${t}/system_offset"
+    printf '%s' "$(ms "${rms_off}")"        | pub "${t}/rms_offset"
+    printf '%s' "$(ms "${rdisp}")"          | pub "${t}/root_dispersion"
+    printf '%s' "${refname:-${refid}}"      | pub "${t}/reference"
+    printf '%s' "${problem}"                | pub "${t}/sync_problem"
+    printf '%s' "${reftime%.*}"             | pub "${t}/last_sync"
+    jq -nc --argjson c "${list}" --argjson w "${WINDOW}" \
+        '{active_window_s:$w, clients:$c}' | pub "${t}/clients/attr"
+    # Again on every update, in case the broker lost its retained messages
+    printf 'online' | pub "${AVAIL}"
+
+    bashio::log.debug "Clients ${active}/${total}, Stratum ${stratum}, Problem ${problem}"
+}
+
+# Right after a start chrony has no source yet (stratum 0); give it up to two
+# minutes, so the first update does not report a sync problem that is none
+wait_for_sync() {
+    local stratum
+    for _ in $(seq 1 24); do
+        stratum=$(chronyc -c tracking 2>/dev/null | cut -d, -f3)
+        [[ "${stratum}" =~ ^[0-9]+$ ]] && (( stratum > 0 && stratum < 16 )) && return 0
+        sleep 5
+    done
+    bashio::log.warning 'chrony not synchronized after two minutes, publishing anyway'
+}
+
+hold_availability &
+HOLDER=$!
+trap stop EXIT TERM INT
+
+publish_discovery
+wait_for_sync
+bashio::log.info "Key figure publisher running, interval ${INTERVAL}s"
+FAILING=0
+while true; do
+    if publish_state; then
+        (( FAILING )) && bashio::log.info 'chronyc answers again'
+        FAILING=0
+    elif (( ! FAILING )); then
+        # Once per outage, not on every interval
+        bashio::log.warning 'chronyc query failed, retrying every interval'
+        FAILING=1
+    fi
+    pause "${INTERVAL}"
+done
