@@ -14,6 +14,8 @@ COPY rootfs /
 ARG BUILD_ARCH BUILD_DATE BUILD_DESCRIPTION BUILD_NAME BUILD_REF BUILD_REPOSITORY BUILD_VERSION
 # For the origin of the MQTT discovery
 ENV APP_VERSION=${BUILD_VERSION}
+# s6-overlay: warnings and errors only, no per-service start/stop info lines
+ENV S6_VERBOSITY=1
 LABEL \
     io.hass.name="${BUILD_NAME}" \
     io.hass.description="${BUILD_DESCRIPTION}" \
