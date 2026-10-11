@@ -2,6 +2,12 @@
 
 All notable changes to this app are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the app uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.4] - 2026-10-11
+
+### Changed
+
+- The base image is set in the Dockerfile only (unchanged `hassio-addons/base` 21.0.8); the deprecated `build.yaml` is gone, so the Supervisor no longer warns about it when building the app
+
 ## [1.3.3] - 2026-10-09
 
 ### Changed

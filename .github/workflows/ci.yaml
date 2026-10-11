@@ -54,9 +54,8 @@ jobs:
           ARCH: ${{ matrix.arch }}
           PLATFORM: ${{ matrix.platform }}
         run: |
-          base=$(yq -r ".build_from.${ARCH}" chrony_ntp/build.yaml)
           version=$(yq -r '.version' chrony_ntp/config.yaml)
-          docker buildx build --platform "${PLATFORM}" --build-arg "BUILD_FROM=${base}" \
+          docker buildx build --platform "${PLATFORM}" \
             --build-arg "BUILD_VERSION=${version}" --load -t chrony-mqtt:test chrony_ntp
       - name: Test
         env:
@@ -76,9 +75,8 @@ jobs:
           persist-credentials: false
       - name: Build
         run: |
-          base=$(yq -r '.build_from.amd64' chrony_ntp/build.yaml)
           version=$(yq -r '.version' chrony_ntp/config.yaml)
-          docker build --build-arg "BUILD_FROM=${base}" --build-arg "BUILD_VERSION=${version}" \
+          docker build --build-arg "BUILD_VERSION=${version}" \
             -t chrony-mqtt:test chrony_ntp
       - name: Start the broker
         run: |
