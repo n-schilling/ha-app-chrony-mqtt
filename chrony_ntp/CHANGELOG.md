@@ -2,6 +2,12 @@
 
 All notable changes to this app are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the app uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.5] - 2026-10-19
+
+### Fixed
+
+- While the MQTT broker is away, for example during its restart, the app logs one warning with the reason and one line once the broker answers again, instead of an `Error: …` line for every message of every update; an update stops at its first message the broker does not take
+
 ## [1.3.4] - 2026-10-11
 
 ### Changed

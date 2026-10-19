@@ -62,7 +62,8 @@ hold_availability() {
 HOLDER=''
 stop() {
     trap - EXIT TERM INT
-    printf 'offline' | pub "${AVAIL}"
+    # Without a broker the last will of the held connection says offline
+    printf 'offline' | pub "${AVAIL}" 2> /dev/null || true
     [[ -n "${HOLDER}" ]] && kill "${HOLDER}" 2>/dev/null
     exit 0
 }
@@ -149,21 +150,31 @@ publish_state() {
     [[ "${stratum}" -ge 16 || "${leap}" != "Normal" || "${refid}" == 7F7F0101 ]] && problem=ON
 
     local t="${TOPIC}"
-    printf '%s' "${total}"                  | pub "${t}/clients"
-    printf '%s' "${active}"                 | pub "${t}/clients_active"
-    printf '%s' "${ntp_rx}"                 | pub "${t}/ntp_requests"
-    printf '%s' "${ntp_drop}"               | pub "${t}/ntp_dropped"
-    printf '%s' "${stratum}"                | pub "${t}/stratum"
-    printf '%s' "$(ms "${cur_off}")"        | pub "${t}/system_offset"
-    printf '%s' "$(ms "${rms_off}")"        | pub "${t}/rms_offset"
-    printf '%s' "$(ms "${rdisp}")"          | pub "${t}/root_dispersion"
-    printf '%s' "${refname:-${refid}}"      | pub "${t}/reference"
-    printf '%s' "${problem}"                | pub "${t}/sync_problem"
-    printf '%s' "${reftime%.*}"             | pub "${t}/last_sync"
-    jq -nc --argjson c "${list}" --argjson w "${WINDOW}" \
-        '{active_window_s:$w, clients:$c}' | pub "${t}/clients/attr"
-    # Again on every update, in case the broker lost its retained messages
-    printf 'online' | pub "${AVAIL}"
+    local -a states=(
+        "${t}/clients"          "${total}"
+        "${t}/clients_active"   "${active}"
+        "${t}/ntp_requests"     "${ntp_rx}"
+        "${t}/ntp_dropped"      "${ntp_drop}"
+        "${t}/stratum"          "${stratum}"
+        "${t}/system_offset"    "$(ms "${cur_off}")"
+        "${t}/rms_offset"       "$(ms "${rms_off}")"
+        "${t}/root_dispersion"  "$(ms "${rdisp}")"
+        "${t}/reference"        "${refname:-${refid}}"
+        "${t}/sync_problem"     "${problem}"
+        "${t}/last_sync"        "${reftime%.*}"
+        "${t}/clients/attr"     "$(jq -nc --argjson c "${list}" --argjson w "${WINDOW}" \
+                                     '{active_window_s:$w, clients:$c}')"
+        # Again on every update, in case the broker lost its retained messages
+        "${AVAIL}"              online
+    )
+    # The first message the broker does not take ends the round: the rest
+    # would fail the same way and only fill the log
+    local i
+    for (( i = 0; i < ${#states[@]}; i += 2 )); do
+        if ! PUB_ERROR=$(printf '%s' "${states[i + 1]}" | pub "${states[i]}" 2>&1); then
+            return 2
+        fi
+    done
 
     bashio::log.debug "Clients ${active}/${total}, Stratum ${stratum}, Problem ${problem}"
 }
@@ -187,15 +198,23 @@ trap stop EXIT TERM INT
 publish_discovery
 wait_for_sync
 bashio::log.info "Key figure publisher running, interval ${INTERVAL}s"
-FAILING=0
+PUB_ERROR=''
+FAILING=''
 while true; do
-    if publish_state; then
-        (( FAILING )) && bashio::log.info 'chronyc answers again'
-        FAILING=0
-    elif (( ! FAILING )); then
-        # Once per outage, not on every interval
-        bashio::log.warning 'chronyc query failed, retrying every interval'
-        FAILING=1
+    publish_state && result=0 || result=$?
+    case ${result} in
+        0) failing='' ;;
+        1) failing='chronyc' ;;
+        *) failing='MQTT broker' ;;
+    esac
+    # Once per outage, not on every interval
+    if [[ "${failing}" != "${FAILING}" ]]; then
+        [[ -n "${FAILING}" ]] && bashio::log.info "${FAILING} answers again"
+        case ${failing} in
+            chronyc) bashio::log.warning 'chronyc query failed, retrying every interval' ;;
+            ?*) bashio::log.warning "MQTT broker not reachable (${PUB_ERROR:-no answer}), retrying every interval" ;;
+        esac
+        FAILING=${failing}
     fi
     pause "${INTERVAL}"
 done

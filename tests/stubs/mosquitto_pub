@@ -1,12 +1,18 @@
 #!/bin/bash
 # Stub for mosquitto_pub -r -t <topic> -s|-n: records "topic<TAB>payload".
-# Like the real one it refuses an empty message on stdin.
+# Like the real one it refuses an empty message on stdin. With PUB_FAIL=n the
+# first n messages to chrony/ topics fail as if the broker were away.
 topic='' null=0
 while (( $# )); do
     [[ "$1" == -t ]] && topic=$2
     [[ "$1" == -n ]] && null=1
     shift
 done
+if (( ${PUB_FAIL:-0} )) && [[ "${topic}" == chrony/* ]]; then
+    calls=$(( $(cat "${PUBLISHED}.calls" 2> /dev/null || echo 0) + 1 ))
+    echo "${calls}" > "${PUBLISHED}.calls"
+    (( calls <= PUB_FAIL )) && { echo 'Error: Connection refused' >&2; exit 1; }
+fi
 if (( null )); then
     payload=''
 else

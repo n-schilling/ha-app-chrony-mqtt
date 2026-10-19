@@ -23,10 +23,10 @@ expect() {
 }
 
 # Runs one service script with the options in $1 (JSON); the main loop ends
-# at its first pause for the MQTT interval
+# at its first pause for the MQTT interval, or at pause number ROUNDS
 run_service() {
     local options=$1 script=$2
-    OPTIONS=${options} bash -c '
+    OPTIONS=${options} ROUNDS=${ROUNDS:-1} bash -c '
         source /usr/lib/bashio/bashio.sh
         bashio::config() {
             jq -r --arg k "$1" ".[\$k] | if type == \"array\" then .[] elif . == null then \"null\" else . end" <<< "${OPTIONS}"
@@ -41,7 +41,7 @@ run_service() {
             esac
         }
         sleep() { return 0; }
-        pause() { exit 0; }
+        pause() { (( --ROUNDS > 0 )) || exit 0; }
         source "$0"
     ' "${script}" > "${WORK}/log" 2>&1
 }
@@ -145,6 +145,23 @@ expect 'gone entity removed with its platform only' \
     "$(grep "^${DEVICE}	" "${PUBLISHED}" | head -1 | cut -f2 | jq -c .components.old)" '{"platform":"sensor"}'
 expect 'then left out' "$(dev | jq -c '.components | has("old")')" false
 : > "${RETAINED}"
+
+echo '# Broker away'
+# Only the states fail; discovery goes through
+: > "${PUBLISHED}"; rm -f "${PUBLISHED}.calls"
+PUB_FAIL=999 ROUNDS=3 TRACKING=/tests/fixtures/tracking.csv run_service "${KPI}" "${S6}/mqtt-kpi/run"
+expect 'no state published' "$(grep -c '^chrony/' "${PUBLISHED}")" 0
+expect 'one warning for the whole outage, with the reason' \
+    "$(grep -c 'MQTT broker not reachable (Error: Connection refused), retrying every interval' "${WORK}/log")" 1
+expect 'no raw errors from the rounds' "$(grep -c '^Error: ' "${WORK}/log")" 0
+expect 'a round stops at its first failed message (3 rounds + offline on stop)' "$(cat "${PUBLISHED}.calls")" 4
+echo '# Broker back'
+: > "${PUBLISHED}"; rm -f "${PUBLISHED}.calls"
+PUB_FAIL=1 ROUNDS=2 TRACKING=/tests/fixtures/tracking.csv run_service "${KPI}" "${S6}/mqtt-kpi/run"
+expect 'warning while away' "$(grep -c 'MQTT broker not reachable' "${WORK}/log")" 1
+expect 'back in the log' "$(grep -c 'MQTT broker answers again' "${WORK}/log")" 1
+expect 'states published again' "$(last stratum)" 2
+rm -f "${PUBLISHED}.calls"
 
 echo '# Serving the local clock'
 : > "${PUBLISHED}"
