@@ -2,6 +2,12 @@
 
 All notable changes to this app are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the app uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.6] - 2026-10-27
+
+### Changed
+
+- Base image `hassio-addons/base` 21.0.10 (was 21.0.8): Alpine 3.24.3, musl 1.2.6-r3, curl 8.23.0
+
 ## [1.3.5] - 2026-10-19
 
 ### Fixed
