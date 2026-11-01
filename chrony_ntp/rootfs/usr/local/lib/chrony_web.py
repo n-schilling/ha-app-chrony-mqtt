@@ -4,9 +4,10 @@ client that took time from it, with the time of its last request.
 
 chrony keeps its counters and client log in memory only, so a restart of the
 app starts its request counters at zero and forgets every client until it
-asks again; some ask once a day. The page therefore keeps the request totals
-and when it first and last saw each client in /data, and lists clients chrony
-no longer knows, until they have been away for FORGET_AFTER.
+asks again; some ask once a day. The page therefore keeps the request totals,
+of the server and of each client, and when it first and last saw each client
+in /data, and lists clients chrony no longer knows, until they have been away
+for FORGET_AFTER.
 
 The page is rendered on the server and needs nothing beyond Python's standard
 library. Its only script takes Home Assistant's theme from the page around
@@ -36,6 +37,8 @@ PORT = 8099              # the Supervisor's default ingress port
 # The Supervisor's ingress proxy; nothing else may talk to the page
 INGRESS_PEER = "172.30.32.2"
 STORE = Path("/data/clients.json")
+PIDFILE = Path("/run/chrony/chronyd.pid")
+COUNTERS = ("requests", "dropped")
 POLL = 15                # seconds between two reads of chronyc
 REFRESH = 30             # seconds between two page updates in the browser
 SAVE_EVERY = 300         # at most one write of the client store per 5 minutes
@@ -60,7 +63,7 @@ TEXT = {
         "all": "All", "active": "Active", "inactive": "Inactive", "search": "Search",
         "no_clients": "No client has asked for the time yet.", "no_match": "No client matches.",
         "ago": "{} ago", "unknown": "–",
-        "active_info": "Active means a request within the last {}.", "chrony_down": "chronyc does not answer.", "loading": "Reading chrony …",
+        "active_info": "Active means a request within the last {}. Requests and drops count since first seen.", "chrony_down": "chronyc does not answer.", "loading": "Reading chrony …",
         "days": "d", "hours": "h", "minutes": "min", "seconds": "s",
         "states": {"*": "selected", "+": "combined", "-": "not combined", "?": "unreachable",
                    "x": "falseticker", "~": "too variable"},
@@ -78,7 +81,7 @@ TEXT = {
         "name": "Name", "address": "Adresse", "interval": "Intervall", "last_seen": "Letzte Anfrage",
         "first_seen": "Zuerst gesehen", "all": "Alle", "active": "Aktiv", "inactive": "Inaktiv",
         "search": "Suchen", "no_clients": "Noch kein Client hat nach der Zeit gefragt.",
-        "no_match": "Kein Client passt.", "ago": "vor {}", "unknown": "–", "active_info": "Aktiv heißt: eine Anfrage in den letzten {}.",
+        "no_match": "Kein Client passt.", "ago": "vor {}", "unknown": "–", "active_info": "Aktiv heißt: eine Anfrage in den letzten {}. Anfragen und Verworfen zählen seit „Zuerst gesehen“.",
         "chrony_down": "chronyc antwortet nicht.", "loading": "Chrony wird gelesen …", "days": "d", "hours": "h", "minutes": "min", "seconds": "s",
         "states": {"*": "ausgewählt", "+": "kombiniert", "-": "nicht kombiniert", "?": "nicht erreichbar",
                    "x": "falsche Zeit", "~": "zu schwankend"},
@@ -287,6 +290,18 @@ def number(text: str) -> float | None:
         return None
 
 
+def chrony_run() -> str | None:
+    """Which chronyd is running: boot, process and its start time. A new one
+    starts its counters at zero."""
+    try:
+        pid = PIDFILE.read_text().strip()
+        start = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[19]
+        boot = Path("/proc/sys/kernel/random/boot_id").read_text().strip()
+    except (OSError, IndexError):
+        return None
+    return f"{boot}:{pid}:{start}"
+
+
 def read_chrony() -> dict:
     """chrony's tracking, sources, server statistics and clients as plain values."""
     t = chronyc("tracking")[0]
@@ -308,7 +323,7 @@ def read_chrony() -> dict:
                         "interval": None if c[3] in ("-", "127") else int(c[3]),
                         "last": None if int(c[5]) >= NEVER else int(c[5])})
     return {"tracking": tracking, "sources": sources, "requests": int(stats[0]), "dropped": int(stats[1]),
-            "clients": clients}
+            "clients": clients, "run": chrony_run()}
 
 
 def sync_problem(tracking: dict) -> bool:
@@ -357,26 +372,52 @@ class Clients:
         except (OSError, ValueError, KeyError, TypeError, AttributeError):
             pass
 
-    def count(self, requests: int, dropped: int, now: float) -> None:
-        """Adds chrony's counters to the totals. They only grow while chrony
-        runs; a smaller value means chrony started again from zero, so what it
-        had counted before goes into the base."""
-        t = self.totals
-        if not t:
-            t.update(since=round(now), base_requests=0, base_dropped=0, requests=0, dropped=0)
-        if requests < t["requests"] or dropped < t["dropped"]:
-            t["base_requests"] += t["requests"]
-            t["base_dropped"] += t["dropped"]
-        t["requests"], t["dropped"] = requests, dropped
+    @staticmethod
+    def add(entry: dict, values: dict, restarted: bool) -> None:
+        """Takes chrony's counters into an entry. They only grow while one
+        chronyd runs; after a new chronyd, or when a counter got smaller
+        (chrony dropped the client from its log), what was counted before
+        goes into the base. A counter seen for the first time is taken as is."""
+        for key in COUNTERS:
+            entry.setdefault("base_" + key, 0)
+            entry.setdefault(key, values[key])
+        if restarted or any(values[key] < entry[key] for key in COUNTERS):
+            for key in COUNTERS:
+                entry["base_" + key] += entry[key]
+        for key in COUNTERS:
+            entry[key] = values[key]
+
+    @staticmethod
+    def sum(entry: dict, key: str) -> int:
+        return entry["base_" + key] + entry[key]
 
     def total(self, key: str) -> int:
-        return self.totals["base_" + key] + self.totals[key]
+        return self.sum(self.totals, key)
 
-    def update(self, clients: list[dict], names: dict[str, str], now: float) -> None:
+    def count(self, chrony: dict, now: float) -> bool:
+        """Takes the server's counters into the totals; True after a new chronyd."""
+        t = self.totals
+        t.setdefault("since", round(now))
+        run = chrony.get("run")
+        # Without a stored run (first start, or a store of 1.5) the counters are taken as is
+        restarted = run is not None and t.get("run") not in (None, run)
+        if run is not None:
+            t["run"] = run
+        self.add(t, chrony, restarted)
+        return restarted
+
+    def update(self, clients: list[dict], names: dict[str, str], now: float, restarted: bool = False) -> None:
+        live = {c["ip"] for c in clients}
+        if restarted:
+            # The new chronyd starts every client at zero, also those it has not heard from yet
+            for ip, entry in self.data.items():
+                if ip not in live and "requests" in entry:
+                    self.add(entry, {key: 0 for key in COUNTERS}, True)
         # A client without an NTP request only used chronyc
         for c in (c for c in clients if c["last"] is not None):
             seen = round(now - c["last"])
             entry = self.data.setdefault(c["ip"], {"first_seen": seen, "last_seen": seen, "name": ""})
+            self.add(entry, c, restarted)
             entry["last_seen"] = max(entry["last_seen"], seen)
             entry["first_seen"] = min(entry["first_seen"], seen)
             entry["name"] = names.get(c["ip"]) or entry["name"]
@@ -432,8 +473,8 @@ class State:
         with self.lock:
             self.chrony, self.at = chrony, now
             if chrony is not None:
-                self.clients.count(chrony["requests"], chrony["dropped"], now)
-                self.clients.update(chrony["clients"], names, now)
+                restarted = self.clients.count(chrony, now)
+                self.clients.update(chrony["clients"], names, now, restarted)
 
     def run(self) -> None:
         while True:
@@ -595,14 +636,16 @@ def clients_card(f: Format, state: State, window: int, now: float) -> str:
         shown = short_name(name) or ip
         text = " ".join((name, ip)).lower()
         last = f'{esc(f.ago(ago))}<span class="sub">{esc(f.when(last_seen))}</span>'
-        requests = esc(f.int(c["requests"])) if c else t["unknown"]
-        dropped = esc(f.int(c["dropped"])) if c else t["unknown"]
+        counted = "requests" in entry
+        requests = esc(f.int(Clients.sum(entry, "requests"))) if counted else t["unknown"]
+        dropped = esc(f.int(Clients.sum(entry, "dropped"))) if counted else t["unknown"]
         interval = esc(f.log2(c["interval"])) if c else t["unknown"]
         sort_ip = ".".join(p.zfill(3) for p in ip.split(".")) if "." in ip else ip
         rows.append(
             f'<tr data-name="{esc(shown.lower())}" data-ip="{esc(sort_ip)}" data-text="{esc(text)}"'
             f' data-state="{"active" if is_active else "inactive"}"'
-            f' data-requests="{c["requests"] if c else ""}" data-dropped="{c["dropped"] if c else ""}"'
+            f' data-requests="{Clients.sum(entry, "requests") if counted else ""}"'
+            f' data-dropped="{Clients.sum(entry, "dropped") if counted else ""}"'
             f' data-interval="{"" if not c or c["interval"] is None else c["interval"]}"'
             f' data-last="{round(ago)}" data-first="{entry["first_seen"]}">'
             f'<td><span class="dot{" on" if is_active else ""}" title="{esc(t["active" if is_active else "inactive"])}"></span></td>'

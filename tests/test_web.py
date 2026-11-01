@@ -76,7 +76,8 @@ class Store(Fixture):
         data = state.clients.data
         # The client that only used chronyc is no NTP client
         self.assertEqual(sorted(data), ["192.0.2.6", "192.0.2.7"])
-        self.assertEqual(data["192.0.2.6"], {"first_seen": NOW - 120, "last_seen": NOW - 120, "name": "plug.lan"})
+        self.assertEqual({k: data["192.0.2.6"][k] for k in ("first_seen", "last_seen", "name", "requests")},
+                         {"first_seen": NOW - 120, "last_seen": NOW - 120, "name": "plug.lan", "requests": 12})
 
     def test_kept_across_restarts(self) -> None:
         self.state()
@@ -117,8 +118,68 @@ class Store(Fixture):
 
 class Totals(Fixture):
     @staticmethod
-    def counting(requests: int, dropped: int = 0):
-        return lambda: {**w.read_chrony(), "requests": requests, "dropped": dropped}
+    def counting(requests: int, dropped: int = 0, run: str | None = None, clients: dict | None = None):
+        """chrony's figures with its counters set; clients maps an address to (requests, dropped)."""
+        def read() -> dict:
+            chrony = {**w.read_chrony(), "requests": requests, "dropped": dropped, "run": run}
+            if clients is not None:
+                chrony["clients"] = [{"ip": ip, "requests": r, "dropped": d, "interval": 10, "last": 60}
+                                     for ip, (r, d) in clients.items()]
+            return chrony
+        return read
+
+    def requests(self, state: w.State, ip: str) -> tuple[int, int]:
+        entry = state.clients.data[ip]
+        return w.Clients.sum(entry, "requests"), w.Clients.sum(entry, "dropped")
+
+    def test_client_counts_survive_a_new_chronyd(self) -> None:
+        both = {"192.0.2.6": (30, 1), "192.0.2.7": (8, 0)}
+        self.state(read=self.counting(38, 1, "a", both))
+        # The new chronyd has heard from one client so far, and that one asked more often already
+        later = self.state(read=self.counting(40, 0, "b", {"192.0.2.6": (40, 0)}), now=NOW + 600)
+        self.assertEqual(self.requests(later, "192.0.2.6"), (70, 1))
+        self.assertEqual(self.requests(later, "192.0.2.7"), (8, 0))
+        self.assertEqual(later.clients.total("requests"), 78)
+        # The second client asks again: counted from zero on top of the 8
+        again = self.state(read=self.counting(45, 0, "b", {"192.0.2.6": (42, 0), "192.0.2.7": (3, 0)}),
+                           now=NOW + 1200)
+        self.assertEqual(self.requests(again, "192.0.2.7"), (11, 0))
+        self.assertEqual(self.requests(again, "192.0.2.6"), (72, 1))
+
+    def test_same_chronyd_counts_only_the_growth(self) -> None:
+        self.state(read=self.counting(10, 0, "a", {"192.0.2.6": (10, 0)}))
+        later = self.state(read=self.counting(25, 0, "a", {"192.0.2.6": (25, 0)}), now=NOW + 600)
+        self.assertEqual((self.requests(later, "192.0.2.6"), later.clients.total("requests")), ((25, 0), 25))
+
+    def test_client_dropped_from_chronys_log(self) -> None:
+        self.state(read=self.counting(50, 0, "a", {"192.0.2.6": (50, 0)}))
+        # Same chronyd, but the client's counter started again
+        later = self.state(read=self.counting(52, 0, "a", {"192.0.2.6": (2, 0)}), now=NOW + 600)
+        self.assertEqual(self.requests(later, "192.0.2.6"), (52, 0))
+
+    def test_store_of_1_5(self) -> None:
+        # No run and no client counters yet: the counters are taken as they are
+        self.path.write_text(json.dumps({
+            "clients": {"192.0.2.6": {"first_seen": NOW - 600, "last_seen": NOW - 60, "name": ""}},
+            "totals": {"since": NOW - 600, "base_requests": 0, "base_dropped": 0, "requests": 30, "dropped": 0}}))
+        state = self.state(read=self.counting(35, 0, "a", {"192.0.2.6": (20, 0)}))
+        self.assertEqual((state.clients.total("requests"), self.requests(state, "192.0.2.6")), (35, (20, 0)))
+        self.assertEqual(state.clients.totals["run"], "a")
+
+    @unittest.skipUnless(Path("/proc/self/stat").exists(), "needs Linux's /proc (runs in the image)")
+    def test_chronyd_run(self) -> None:
+        pidfile = Path(self.tmp.name) / "chronyd.pid"
+        pidfile.write_text(f"{os.getpid()}\n")
+        real = w.PIDFILE
+        w.PIDFILE = pidfile
+        try:
+            run = w.chrony_run()
+            self.assertEqual(run, w.chrony_run())
+            self.assertEqual(run.split(":")[1], str(os.getpid()))
+            w.PIDFILE = Path(self.tmp.name) / "missing.pid"
+            self.assertIsNone(w.chrony_run())
+        finally:
+            w.PIDFILE = real
 
     def test_totals_survive_a_restart(self) -> None:
         self.state(read=self.counting(100, 3))
@@ -133,7 +194,7 @@ class Totals(Fixture):
     def test_growing_counters_are_not_added_twice(self) -> None:
         clients = w.Clients(self.path)
         for n in (10, 20, 30):
-            clients.count(n, 0, NOW)
+            clients.count({"requests": n, "dropped": 0, "run": "a"}, NOW)
         self.assertEqual(clients.total("requests"), 30)
 
     def test_store_of_1_4_without_totals(self) -> None:
@@ -202,7 +263,8 @@ class Page(Fixture):
         gone = lambda: {**w.read_chrony(), "clients": []}  # noqa: E731
         page = w.render(self.state(read=gone, now=NOW + 3600), "en", 3900, None)
         self.assertIn("1 h 2 min ago", page)
-        self.assertIn('data-requests=""', page)
+        # Its requests stay from the store; the interval only chrony knows
+        self.assertIn('data-requests="12" data-dropped="0" data-interval=""', page)
 
     def test_names_from_dns_escaped(self) -> None:
         state = self.state(table={"192.0.2.6": '<img src=x onerror="alert(1)">'})

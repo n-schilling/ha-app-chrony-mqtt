@@ -2,6 +2,16 @@
 
 All notable changes to this app are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the app uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.0] - 2026-11-01
+
+### Added
+
+- The web page counts each client's requests and drops across restarts of the app too, since the client was first seen; clients chrony forgot keep their counts in the list
+
+### Changed
+
+- A restart of chronyd is recognized by its process instead of by smaller counters, so requests that arrive between the restart and the next read of the page are not lost
+
 ## [1.5.0] - 2026-11-01
 
 ### Added
