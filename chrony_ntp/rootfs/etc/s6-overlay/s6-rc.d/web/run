@@ -1,0 +1,9 @@
+#!/command/with-contenv bashio
+# shellcheck shell=bash
+# ==============================================================================
+# The web page behind Home Assistant's ingress
+# ==============================================================================
+ACTIVE_WINDOW=$(bashio::config 'active_window')
+export ACTIVE_WINDOW
+bashio::log.info 'Starting the web page'
+exec python3 /usr/local/lib/chrony_web.py

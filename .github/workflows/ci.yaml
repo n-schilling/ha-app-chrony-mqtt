@@ -30,6 +30,8 @@ jobs:
           chrony_ntp/rootfs/usr/local/lib/mqtt-device.sh
           chrony_ntp/rootfs/etc/s6-overlay/s6-rc.d/chrony/finish
           tests/test_app.sh tests/test_broker.sh tests/stubs/chronyc tests/stubs/mosquitto_*
+      - name: Python
+        run: pipx run ruff==0.17.3 check chrony_ntp/rootfs/usr/local/lib tests
 
   test:
     name: Build and test (${{ matrix.arch }})
@@ -64,6 +66,13 @@ jobs:
           docker run --rm --network none --platform "${PLATFORM}"
           -v "${PWD}/tests:/tests:ro" --entrypoint bash chrony-mqtt:test
           /tests/test_app.sh
+      - name: Test the web page
+        env:
+          PLATFORM: ${{ matrix.platform }}
+        run: >-
+          docker run --rm --network none --platform "${PLATFORM}"
+          -v "${PWD}/tests:/tests:ro" --entrypoint python3 chrony-mqtt:test
+          -m unittest discover -v -s /tests -p 'test_*.py'
 
   broker:
     name: Against a real MQTT broker

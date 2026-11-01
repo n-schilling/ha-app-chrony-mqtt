@@ -2,6 +2,17 @@
 
 All notable changes to this app are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the app uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.0] - 2026-11-01
+
+### Added
+
+- Web page in the sidebar (**NTP Server**, through ingress, administrators only) in Home Assistant's look and theme: sync status, upstream sources, accuracy figures and a list of all clients with name (reverse DNS), requests, drops, request interval, last request and first seen; sortable, filterable and searchable, updated every 30 seconds
+- The page keeps when it first and last saw each client in the app's data folder, so clients survive restarts of the app; clients unheard of for 30 days drop off
+
+### Changed
+
+- The image contains Python 3 for the web page
+
 ## [1.3.6] - 2026-10-27
 
 ### Changed

@@ -7,7 +7,8 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 RUN \
     apk add --no-cache \
         chrony~4.8 \
-        mosquitto-clients
+        mosquitto-clients \
+        python3
 
 COPY rootfs /
 

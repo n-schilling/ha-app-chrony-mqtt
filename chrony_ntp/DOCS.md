@@ -22,6 +22,17 @@ Runs chrony as an NTP server on port 123/udp, so devices in your network can tak
 | `discovery_prefix` | `homeassistant` | MQTT discovery prefix |
 | `log_level` | `info` | How much the app writes to its log: `info`, `warning` or `error` |
 
+## Web page
+
+The app adds **NTP Server** to the sidebar (administrators only). The page follows your Home Assistant theme and updates itself every 30 seconds:
+
+- **Status**: synchronized or not, reference source, stratum, last upstream sync, system offset and the NTP requests since the app started
+- **Upstream sources**: each server chrony uses, its state (selected, combined, unreachable, …), how many of the last 8 polls it answered, its last reply and offset
+- **Accuracy**: RMS offset, frequency, skew, root delay and dispersion, update interval
+- **Clients**: every device that took time from the server, with its name from reverse DNS, address, requests, drops, request interval, time of its last request and when the app first saw it; sortable by every column, filterable by active/inactive and searchable
+
+chrony forgets its clients when it restarts. The page therefore keeps when it first and last saw each client in the app's data folder, so a client that asks only once a day still shows up after an app update with its last request. Clients the server has not heard from for 30 days drop off the list.
+
 ## Sensors
 
 Device **Chrony NTP Server**:
@@ -95,7 +106,8 @@ The entity IDs follow the device name; adjust them if you renamed the device.
 
 - One NTP server per Home Assistant host: port 123 can only be served once.
 - `set_system_clock` changes the clock of the whole host. Turn it off if something else, e.g. Home Assistant OS's own time sync, should stay in charge.
-- Client statistics come from chrony's client log, which only covers recent clients and resets when the app restarts.
+- Client statistics (requests, drops, interval) come from chrony's client log, which resets when the app restarts; the web page keeps only the times a client was first and last seen across restarts.
+- Client names come from reverse DNS, i.e. from what your router knows about the address; clients without an entry show their address.
 
 ## Removing the app
 
