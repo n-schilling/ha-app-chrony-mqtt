@@ -9,7 +9,6 @@ arch:
   - amd64
 init: false
 ingress: true
-ingress_port: 8099
 panel_icon: mdi:clock-check-outline
 panel_title: NTP Server
 privileged:
