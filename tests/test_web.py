@@ -156,6 +156,13 @@ class Page(Fixture):
         self.assertIn("Inaktiv · 1", page)
         self.assertIn('href="/config/app/abc_chrony_ntp/config" target="_top"', page)
 
+    def test_upstream_names_from_dns(self) -> None:
+        state = self.state(table={"192.53.103.108": "time.example.net"})
+        page = w.render(state, "en", 3900, None)
+        self.assertIn("Synchronized with time.example.net", page)
+        self.assertIn('<td title="192.53.103.108">time.example.net', page)
+        self.assertIn('<td title="192.0.2.50">192.0.2.50', page)
+
     def test_client_chrony_forgot(self) -> None:
         self.state()
         gone = lambda: {**w.read_chrony(), "clients": []}  # noqa: E731

@@ -2,6 +2,12 @@
 
 All notable changes to this app are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the app uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.1] - 2026-11-01
+
+### Fixed
+
+- The web page shows the upstream servers and the reference source by name (reverse DNS) instead of their addresses
+
 ## [1.4.0] - 2026-11-01
 
 ### Added

@@ -375,6 +375,12 @@ class State:
         # Lookups can take seconds; the page keeps showing the last read meanwhile
         names = {c["ip"]: self.names.get(c["ip"], now) for c in (chrony or {}).get("clients", [])
                  if c["last"] is not None}
+        if chrony is not None:
+            # chronyc's CSV output has addresses only, also for the upstream servers
+            for source in chrony["sources"]:
+                source["host"] = self.names.get(source["name"], now)
+            refname = chrony["tracking"]["refname"]
+            chrony["tracking"]["host"] = self.names.get(refname, now) if refname else ""
         with self.lock:
             self.chrony, self.at = chrony, now
             if chrony is not None:
@@ -461,7 +467,7 @@ def card(title: str | None, content: str, padded: bool = True, attrs: str = "") 
 
 def status_card(f: Format, chrony: dict, now: float) -> str:
     t, tr = f.t, chrony["tracking"]
-    reference = tr["refname"] or tr["refid"]
+    reference = tr.get("host") or tr["refname"] or tr["refid"]
     if not sync_problem(tr):
         state = f'<div class="state ok">{icon("ok")}{esc(t["synced"].format(reference))}</div>'
     else:
@@ -499,7 +505,8 @@ def sources_card(f: Format, chrony: dict) -> str:
         state = t["states"].get(s["state"], s["state"])
         cls = "ok" if s["state"] == "*" else "bad" if s["state"] in "?x~" else ""
         reach = bin(s["reach"]).count("1")
-        rows.append(f'<tr><td>{esc(s["name"])}<span class="sub">{esc(t["stratum"])} {esc(s["stratum"])} · '
+        host = s.get("host") or s["name"]
+        rows.append(f'<tr><td title="{esc(s["name"])}">{esc(host)}<span class="sub">{esc(t["stratum"])} {esc(s["stratum"])} · '
                     f'{esc(t["poll"])} {esc(f.log2(s["poll"]))}</span></td>'
                     f'<td class="{cls}">{esc(state)}</td>'
                     f'<td class="n" title="{s["reach"]:03o}">{reach}/8</td>'
