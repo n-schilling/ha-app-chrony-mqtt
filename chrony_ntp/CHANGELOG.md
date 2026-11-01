@@ -2,6 +2,13 @@
 
 All notable changes to this app are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the app uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.0] - 2026-11-01
+
+### Added
+
+- The web page keeps the totals of NTP requests and dropped requests in the app's data folder, so they survive restarts; it shows them with the date counting began and chrony's own counters since the app started
+- Refresh button in the header of the web page, which reads chrony at once, and the time of the shown data next to it
+
 ## [1.4.1] - 2026-11-01
 
 ### Fixed

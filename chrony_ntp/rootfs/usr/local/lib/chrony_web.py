@@ -2,15 +2,16 @@
 Home Assistant's settings: chrony's state, its upstream sources and every
 client that took time from it, with the time of its last request.
 
-chrony keeps its client log in memory only, so a restart of the app forgets
-every client until it asks again; some ask once a day. The page therefore
-keeps when it first and last saw each client in /data and lists clients
-chrony no longer knows, until they have been away for FORGET_AFTER.
+chrony keeps its counters and client log in memory only, so a restart of the
+app starts its request counters at zero and forgets every client until it
+asks again; some ask once a day. The page therefore keeps the request totals
+and when it first and last saw each client in /data, and lists clients chrony
+no longer knows, until they have been away for FORGET_AFTER.
 
 The page is rendered on the server and needs nothing beyond Python's standard
 library. Its only script takes Home Assistant's theme from the page around
 the ingress frame, sorts and filters the client list, and swaps in a fresh
-copy of the page every REFRESH seconds.
+copy of the page every REFRESH seconds or when the refresh button is pressed.
 """
 
 from __future__ import annotations
@@ -46,13 +47,13 @@ LOCALHOST = ("127.0.0.1", "::1")
 
 TEXT = {
     "en": {
-        "title": "NTP server", "settings": "Settings", "status": "Status", "accuracy": "Accuracy", "synced": "Synchronized with {}",
+        "title": "NTP server", "settings": "Settings", "refresh": "Refresh", "as_of": "As of {}", "status": "Status", "accuracy": "Accuracy", "synced": "Synchronized with {}",
         "unsynced": "Not synchronized", "local": "Serving its own clock, no upstream source",
         "leap": "Leap status: {}", "reference": "Reference source", "stratum": "Stratum",
         "offset": "System offset", "rms": "RMS offset", "frequency": "Frequency", "skew": "Skew",
         "root_delay": "Root delay", "root_dispersion": "Root dispersion", "last_sync": "Last upstream sync",
         "update_interval": "Update interval", "requests": "NTP requests", "dropped": "Dropped",
-        "since_start": "since the app started", "sources": "Upstream sources", "source": "Server",
+        "since_start": "{} since app start", "since": "since {}", "sources": "Upstream sources", "source": "Server",
         "state": "State", "poll": "every", "reach": "Reach", "last_rx": "Last reply", "sample": "Offset",
         "no_sources": "No upstream source.", "clients": "Clients", "name": "Name", "address": "Address",
         "interval": "Interval", "last_seen": "Last request", "first_seen": "First seen",
@@ -65,13 +66,13 @@ TEXT = {
                    "x": "falseticker", "~": "too variable"},
     },
     "de": {
-        "title": "NTP-Server", "settings": "Einstellungen", "status": "Status", "accuracy": "Genauigkeit", "synced": "Synchron mit {}",
+        "title": "NTP-Server", "settings": "Einstellungen", "refresh": "Aktualisieren", "as_of": "Stand {}", "status": "Status", "accuracy": "Genauigkeit", "synced": "Synchron mit {}",
         "unsynced": "Nicht synchronisiert", "local": "Verteilt die eigene Uhr, keine Upstream-Quelle",
         "leap": "Schaltsekunden-Status: {}", "reference": "Referenzquelle", "stratum": "Stratum",
         "offset": "Systemabweichung", "rms": "RMS-Abweichung", "frequency": "Frequenz", "skew": "Streuung",
         "root_delay": "Root Delay", "root_dispersion": "Root Dispersion", "last_sync": "Letzter Abgleich",
         "update_interval": "Abgleich-Intervall", "requests": "NTP-Anfragen", "dropped": "Verworfen",
-        "since_start": "seit dem Start der App", "sources": "Upstream-Quellen", "source": "Server",
+        "since_start": "{} seit App-Start", "since": "seit {}", "sources": "Upstream-Quellen", "source": "Server",
         "state": "Zustand", "poll": "alle", "reach": "Erreichbar", "last_rx": "Letzte Antwort",
         "sample": "Abweichung", "no_sources": "Keine Upstream-Quelle.", "clients": "Clients",
         "name": "Name", "address": "Adresse", "interval": "Intervall", "last_seen": "Letzte Anfrage",
@@ -89,6 +90,7 @@ ICONS = {
     "settings": "M12,8A4,4 0 0,1 16,12A4,4 0 0,1 12,16A4,4 0 0,1 8,12A4,4 0 0,1 12,8M12,10A2,2 0 0,0 10,12A2,2 0 0,0 12,14A2,2 0 0,0 14,12A2,2 0 0,0 12,10M10,22C9.75,22 9.54,21.82 9.5,21.58L9.13,18.93C8.5,18.68 7.96,18.34 7.44,17.94L4.95,18.95C4.73,19.03 4.46,18.95 4.34,18.73L2.34,15.27C2.21,15.05 2.27,14.78 2.46,14.63L4.57,12.97L4.5,12L4.57,11L2.46,9.37C2.27,9.22 2.21,8.95 2.34,8.73L4.34,5.27C4.46,5.05 4.73,4.96 4.95,5.05L7.44,6.05C7.96,5.66 8.5,5.32 9.13,5.07L9.5,2.42C9.54,2.18 9.75,2 10,2H14C14.25,2 14.46,2.18 14.5,2.42L14.87,5.07C15.5,5.32 16.04,5.66 16.56,6.05L19.05,5.05C19.27,4.96 19.54,5.05 19.66,5.27L21.66,8.73C21.79,8.95 21.73,9.22 21.54,9.37L19.43,11L19.5,12L19.43,13L21.54,14.63C21.73,14.78 21.79,15.05 21.66,15.27L19.66,18.73C19.54,18.95 19.27,19.04 19.05,18.95L16.56,17.95C16.04,18.34 15.5,18.68 14.87,18.93L14.5,21.58C14.46,21.82 14.25,22 14,22H10M11.25,4L10.88,6.61C9.68,6.86 8.62,7.5 7.85,8.39L5.44,7.35L4.69,8.65L6.8,10.2C6.4,11.37 6.4,12.64 6.8,13.8L4.68,15.36L5.43,16.66L7.86,15.62C8.63,16.5 9.68,17.14 10.87,17.38L11.24,20H12.76L13.13,17.39C14.32,17.14 15.37,16.5 16.14,15.62L18.57,16.66L19.32,15.36L17.2,13.81C17.6,12.64 17.6,11.37 17.2,10.2L19.31,8.65L18.56,7.35L16.15,8.39C15.38,7.5 14.32,6.86 13.12,6.62L12.75,4H11.25Z",
     "ok": "M12 2C6.5 2 2 6.5 2 12S6.5 22 12 22 22 17.5 22 12 17.5 2 12 2M10 17L5 12L6.41 10.59L10 14.17L17.59 6.58L19 8L10 17Z",
     "alert": "M13,13H11V7H13M13,17H11V15H13M12,2A10,10 0 0,0 2,12A10,10 0 0,0 12,22A10,10 0 0,0 22,12A10,10 0 0,0 12,2Z",
+    "refresh": "M17.65,6.35C16.2,4.9 14.21,4 12,4A8,8 0 0,0 4,12A8,8 0 0,0 12,20C15.73,20 18.84,17.45 19.73,14H17.65C16.83,16.33 14.61,18 12,18A6,6 0 0,1 6,12A6,6 0 0,1 12,6C13.66,6 15.14,6.69 16.22,7.78L13,11H20V4L17.65,6.35Z",
     "search": "M9.5,3A6.5,6.5 0 0,1 16,9.5C16,11.11 15.41,12.59 14.44,13.73L14.71,14H15.5L20.5,19L19,20.5L14,15.5V14.71L13.73,14.44C12.59,15.41 11.11,16 9.5,16A6.5,6.5 0 0,1 3,9.5A6.5,6.5 0 0,1 9.5,3M9.5,5C7,5 5,7 5,9.5C5,12 7,14 9.5,14C12,14 14,12 14,9.5C14,7 12,5 9.5,5Z",
 }
 
@@ -121,7 +123,10 @@ header { position: sticky; top: 0; z-index: 2; display: flex; align-items: cente
   border-bottom: var(--app-header-border-bottom); }
 header h1 { margin: 0 0 0 12px; font-size: 20px; font-weight: 400; line-height: 32px; white-space: nowrap;
   overflow: hidden; text-overflow: ellipsis; }
-header .actions { margin-left: auto; display: flex; }
+header .actions { margin-left: auto; display: flex; align-items: center; }
+header .stamp { margin-right: 8px; font-size: 12px; color: var(--secondary-text-color); white-space: nowrap; }
+#refresh.busy svg { animation: spin 0.8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
 header .actions a { display: flex; align-items: center; justify-content: center; width: 48px; height: 48px;
   border-radius: 50%; color: var(--sidebar-icon-color); }
 header .actions a:hover, tbody tr:hover { background: color-mix(in srgb, var(--primary-text-color) 6%, transparent); }
@@ -231,22 +236,40 @@ SCRIPT = """(() => {
     if (e.target.id === "q") { view.q = e.target.value.trim().toLowerCase(); apply(); }
   });
   document.addEventListener("DOMContentLoaded", apply);
-  setInterval(async () => {
-    if (document.hidden) return;
+  // Swaps in a fresh copy of the page; now asks the server to read chrony at once
+  let busy = false;
+  const update = async (now) => {
+    if (busy) return;
+    busy = true;
+    const button = document.querySelector("#refresh");
+    if (now && button) button.classList.add("busy");
     try {
-      const page = await fetch(location.href, { cache: "no-store" });
+      const url = new URL(location.href);
+      if (now) url.searchParams.set("refresh", "1");
+      const page = await fetch(url, { cache: "no-store" });
       if (!page.ok) return;
-      const fresh = new DOMParser().parseFromString(await page.text(), "text/html").querySelector("main");
+      const doc = new DOMParser().parseFromString(await page.text(), "text/html");
+      const fresh = doc.querySelector("main");
       const q = document.querySelector("#q"), typing = q && document.activeElement === q;
-      const main = document.querySelector("main");
-      if (typing) {
-        fresh.querySelector("#q").replaceWith(q);
+      if (typing) fresh.querySelector("#q").replaceWith(q);
+      document.querySelector("main").replaceWith(fresh);
+      const stamp = document.querySelector("header .stamp"), freshStamp = doc.querySelector("header .stamp");
+      if (freshStamp) {
+        if (stamp) stamp.replaceWith(freshStamp);
+        else document.querySelector("#actions").prepend(freshStamp);
       }
-      main.replaceWith(fresh);
       apply();
       if (typing) q.focus();
-    } catch (e) {}
-  }, REFRESH * 1000);
+    } catch (e) {
+    } finally {
+      busy = false;
+      if (button) button.classList.remove("busy");
+    }
+  };
+  document.addEventListener("click", (e) => {
+    if (e.target.closest("#refresh")) { e.preventDefault(); update(true); }
+  });
+  setInterval(() => { if (!document.hidden) update(false); }, REFRESH * 1000);
 })();""".replace("NAMES", json.dumps(THEME_VARS)).replace("REFRESH", str(REFRESH))
 
 
@@ -319,16 +342,35 @@ class Names:
 
 
 class Clients:
-    """When each client was first and last seen, kept across restarts."""
+    """When each client was first and last seen, and the request totals,
+    kept across restarts."""
 
     def __init__(self, path: Path) -> None:
         self.path = path
         self.data: dict[str, dict] = {}
+        self.totals: dict = {}
         self._saved = 0.0
         try:
-            self.data = json.loads(path.read_text())["clients"]
-        except (OSError, ValueError, KeyError, TypeError):
+            stored = json.loads(path.read_text())
+            self.data = stored["clients"]
+            self.totals = stored.get("totals") or {}
+        except (OSError, ValueError, KeyError, TypeError, AttributeError):
             pass
+
+    def count(self, requests: int, dropped: int, now: float) -> None:
+        """Adds chrony's counters to the totals. They only grow while chrony
+        runs; a smaller value means chrony started again from zero, so what it
+        had counted before goes into the base."""
+        t = self.totals
+        if not t:
+            t.update(since=round(now), base_requests=0, base_dropped=0, requests=0, dropped=0)
+        if requests < t["requests"] or dropped < t["dropped"]:
+            t["base_requests"] += t["requests"]
+            t["base_dropped"] += t["dropped"]
+        t["requests"], t["dropped"] = requests, dropped
+
+    def total(self, key: str) -> int:
+        return self.totals["base_" + key] + self.totals[key]
 
     def update(self, clients: list[dict], names: dict[str, str], now: float) -> None:
         # A client without an NTP request only used chronyc
@@ -346,7 +388,7 @@ class Clients:
     def save(self, now: float) -> None:
         tmp = self.path.with_suffix(".tmp")
         try:
-            tmp.write_text(json.dumps({"clients": self.data}, sort_keys=True))
+            tmp.write_text(json.dumps({"clients": self.data, "totals": self.totals}, sort_keys=True))
             os.replace(tmp, self.path)
             self._saved = now
         except OSError as err:
@@ -364,8 +406,14 @@ class State:
         self.lock = threading.Lock()
         self.chrony: dict | None = None
         self.at = 0.0
+        # One read of chronyc at a time: the background loop or a refresh button
+        self._reading = threading.Lock()
 
     def refresh(self) -> None:
+        with self._reading:
+            self._refresh()
+
+    def _refresh(self) -> None:
         now = self._clock()
         try:
             chrony = self._read()
@@ -384,6 +432,7 @@ class State:
         with self.lock:
             self.chrony, self.at = chrony, now
             if chrony is not None:
+                self.clients.count(chrony["requests"], chrony["dropped"], now)
                 self.clients.update(chrony["clients"], names, now)
 
     def run(self) -> None:
@@ -445,6 +494,9 @@ class Format:
         return time.strftime("%d.%m.%Y %H:%M:%S" if self.lang == "de" else "%Y-%m-%d %H:%M:%S",
                              time.localtime(epoch))
 
+    def day(self, epoch: float) -> str:
+        return time.strftime("%d.%m.%Y" if self.lang == "de" else "%Y-%m-%d", time.localtime(epoch))
+
     def log2(self, exponent: int | None) -> str:
         """chrony's intervals are powers of two."""
         return self.t["unknown"] if exponent is None else self.duration(2.0 ** exponent)
@@ -465,7 +517,7 @@ def card(title: str | None, content: str, padded: bool = True, attrs: str = "") 
     return f'<div class="card"{attrs}>{head}{inner}</div>'
 
 
-def status_card(f: Format, chrony: dict, now: float) -> str:
+def status_card(f: Format, chrony: dict, clients: Clients, now: float) -> str:
     t, tr = f.t, chrony["tracking"]
     reference = tr.get("host") or tr["refname"] or tr["refid"]
     if not sync_problem(tr):
@@ -474,6 +526,7 @@ def status_card(f: Format, chrony: dict, now: float) -> str:
         reason = (t["local"] if tr["refid"] == LOCAL_CLOCK else
                   t["unsynced"] if tr["stratum"] >= 16 else t["leap"].format(tr["leap"]))
         state = f'<div class="state bad">{icon("alert")}{esc(reason)}</div>'
+    since = t["since"].format(f.day(clients.totals["since"]))
     last_sync = (f'{esc(f.ago(now - tr["reftime"]))}<span class="sub">{esc(f.when(tr["reftime"]))}</span>'
                  if tr["reftime"] else t["unknown"])
     return card(t["status"], state + kv([
@@ -481,8 +534,10 @@ def status_card(f: Format, chrony: dict, now: float) -> str:
         (t["stratum"], esc(tr["stratum"])),
         (t["last_sync"], last_sync),
         (t["offset"], esc(f.ms(tr["offset"]))),
-        (t["requests"], f'{esc(f.int(chrony["requests"]))}<span class="sub">{esc(t["since_start"])}</span>'),
-        (t["dropped"], esc(f.int(chrony["dropped"]))),
+        (t["requests"], f'{esc(f.int(clients.total("requests")))}<span class="sub">{esc(since)} · '
+                        f'{esc(t["since_start"].format(f.int(chrony["requests"])))}</span>'),
+        (t["dropped"], f'{esc(f.int(clients.total("dropped")))}<span class="sub">{esc(since)} · '
+                       f'{esc(t["since_start"].format(f.int(chrony["dropped"])))}</span>'),
     ]))
 
 
@@ -582,15 +637,18 @@ def render(state: State, lang: str, window: int, slug: str | None, now: float | 
             body = card(t["status"], f'<p class="muted">{esc(t["loading"])}</p>' if not state.at else
                         f'<div class="state bad">{icon("alert")}{esc(t["chrony_down"])}</div>')
         else:
-            body = f'<div class="cards">{status_card(f, chrony, now)}<div>{sources_card(f, chrony)}{accuracy_card(f, chrony)}</div></div>'
+            body = f'<div class="cards">{status_card(f, chrony, state.clients, now)}<div>{sources_card(f, chrony)}{accuracy_card(f, chrony)}</div></div>'
         body += clients_card(f, state, window, now)
     # The settings are Home Assistant's own page, outside the ingress frame
-    actions = (f'<a href="/config/app/{esc(slug)}/config" target="_top" title="{esc(t["settings"])}">'
-               f'{icon("settings")}</a>' if slug else "")
+    stamp = time.strftime("%H:%M:%S", time.localtime(state.at)) if state.at else ""
+    actions = f'<span class="stamp opt">{esc(t["as_of"].format(stamp))}</span>' if stamp else ""
+    actions += f'<a href="" id="refresh" title="{esc(t["refresh"])}" role="button">{icon("refresh")}</a>'
+    actions += (f'<a href="/config/app/{esc(slug)}/config" target="_top" title="{esc(t["settings"])}">'
+                f'{icon("settings")}</a>' if slug else "")
     return (f'<!doctype html><html lang="{lang}"><head><meta charset="utf-8">'
             '<meta name="viewport" content="width=device-width, initial-scale=1">'
             f"<title>{esc(t['title'])}</title><style>{STYLE}</style><script>{SCRIPT}</script></head><body>"
-            f'<header><h1>{esc(t["title"])}</h1><div class="actions">{actions}</div></header>'
+            f'<header><h1>{esc(t["title"])}</h1><div class="actions" id="actions">{actions}</div></header>'
             f"<main>{body}</main></body></html>")
 
 
@@ -614,6 +672,9 @@ def handler(state: State, window: int, slug: str | None, allowed: set[str]):
             elif self.path.split("?", 1)[0] != "/":
                 self._send(404, "text/plain", b"not found")
             else:
+                # The refresh button asks for a read of chrony at once
+                if "refresh=1" in self.path.partition("?")[2].split("&"):
+                    state.refresh()
                 page = render(state, lang_of(self.headers.get("Accept-Language")), window, slug)
                 self._send(200, "text/html; charset=utf-8", page.encode())
 

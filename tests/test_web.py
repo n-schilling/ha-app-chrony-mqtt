@@ -115,6 +115,40 @@ class Store(Fixture):
         self.assertTrue(self.path.exists())
 
 
+class Totals(Fixture):
+    @staticmethod
+    def counting(requests: int, dropped: int = 0):
+        return lambda: {**w.read_chrony(), "requests": requests, "dropped": dropped}
+
+    def test_totals_survive_a_restart(self) -> None:
+        self.state(read=self.counting(100, 3))
+        self.state(read=self.counting(150, 4), now=NOW + 600)
+        # The app restarted: chrony counts from zero again
+        later = self.state(read=self.counting(20, 1), now=NOW + 1200)
+        self.assertEqual((later.clients.total("requests"), later.clients.total("dropped")), (170, 5))
+        self.assertEqual(later.clients.totals["since"], NOW)
+        stored = json.loads(self.path.read_text())["totals"]
+        self.assertEqual((stored["base_requests"], stored["requests"]), (150, 20))
+
+    def test_growing_counters_are_not_added_twice(self) -> None:
+        clients = w.Clients(self.path)
+        for n in (10, 20, 30):
+            clients.count(n, 0, NOW)
+        self.assertEqual(clients.total("requests"), 30)
+
+    def test_store_of_1_4_without_totals(self) -> None:
+        self.path.write_text(json.dumps({"clients": {}}))
+        state = self.state(read=self.counting(7))
+        self.assertEqual(state.clients.total("requests"), 7)
+
+    def test_page_shows_totals_and_the_counters_since_the_start(self) -> None:
+        self.state(read=self.counting(1200, 2))
+        page = w.render(self.state(read=self.counting(62), now=NOW + 60), "de", 3900, None, now=NOW + 60)
+        self.assertIn("1.262", page)
+        self.assertIn("62 seit App-Start", page)
+        self.assertIn("seit " + w.Format("de").day(NOW), page)
+
+
 class Formatting(unittest.TestCase):
     def test_durations(self) -> None:
         de = w.Format("de")
@@ -222,6 +256,22 @@ class Server(Fixture):
         self.assertEqual(code, 200)
         self.assertIn('<html lang="de">', page)
         self.assertEqual(self.get(base + "/other")[0], 404)
+
+    def test_refresh_button_reads_chrony_at_once(self) -> None:
+        reads = []
+        state = self.state()
+        real = state._read
+        state._read = lambda: reads.append(1) or real()
+        server = w.Server(("127.0.0.1", 0), w.handler(state, 3900, None, set()))
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        base = f"http://127.0.0.1:{server.server_address[1]}"
+        code, page = self.get(base + "/")
+        self.assertEqual((code, len(reads)), (200, 0))
+        self.assertIn('id="refresh"', page)
+        self.assertEqual(self.get(base + "/?refresh=1")[0], 200)
+        self.assertEqual(len(reads), 1)
 
     def test_store_written_as_json(self) -> None:
         self.state()
