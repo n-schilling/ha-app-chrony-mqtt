@@ -11,6 +11,16 @@
 
 A Home Assistant app that runs [chrony](https://chrony-project.org/) as a local NTP server for your network with a page of its own in Home Assistant that shows the sync status, the upstream sources and every client with the time of its last request, a name and a note. Two problem sensors through MQTT discovery tell Home Assistant when the server loses its upstream source or no client asks any more.
 
+## The web page
+
+The page (**Open web UI** on the app's page, or in the sidebar with **Show in sidebar**) looks like Home Assistant's settings and takes over the theme in use. The screenshots show made-up demo data.
+
+| Status and upstream sources | Clients |
+|---|---|
+| ![Sync status, request totals, upstream sources and accuracy](docs/screenshots/overview.png) | ![Clients with requests, interval and last request, filtered by state](docs/screenshots/clients.png) |
+| **Name and note of a client** | |
+| ![Dialog to name a client, add a note or forget it](docs/screenshots/edit.png) | |
+
 ## Installation
 
 1. Add the repository to your Home Assistant instance:
