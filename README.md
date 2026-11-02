@@ -9,7 +9,7 @@
 
 ![Chrony NTP + MQTT](chrony_ntp/logo.png)
 
-A Home Assistant app (formerly add-on) that runs [chrony](https://chrony-project.org/) as a local NTP server for your network with a page in the sidebar that shows the sync status, the upstream sources and every client with the time of its last request, a name and a note. Two problem sensors through MQTT discovery tell Home Assistant when the server loses its upstream source or no client asks any more.
+A Home Assistant app that runs [chrony](https://chrony-project.org/) as a local NTP server for your network with a page of its own in Home Assistant that shows the sync status, the upstream sources and every client with the time of its last request, a name and a note. Two problem sensors through MQTT discovery tell Home Assistant when the server loses its upstream source or no client asks any more.
 
 ## Installation
 
@@ -17,7 +17,7 @@ A Home Assistant app (formerly add-on) that runs [chrony](https://chrony-project
 
    [![Add the repository to My Home Assistant](https://my.home-assistant.io/badges/supervisor_add_addon_repository.svg)](https://my.home-assistant.io/redirect/supervisor_add_addon_repository/?repository_url=https%3A%2F%2Fgithub.com%2Fn-schilling%2Fha-app-chrony-mqtt)
 
-   Or add it manually: **Settings → Apps → Install app → ⋮ → Repositories** (before Home Assistant 2026.2: **Settings → Add-ons → Add-on store**), then paste:
+   Or add it manually: **Settings → Apps → Install app → ⋮ → Repositories**, then paste:
 
    ```text
    https://github.com/n-schilling/ha-app-chrony-mqtt
