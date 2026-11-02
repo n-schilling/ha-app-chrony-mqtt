@@ -9,7 +9,7 @@
 
 ![Chrony NTP + MQTT](chrony_ntp/logo.png)
 
-A Home Assistant app (formerly add-on) that runs [chrony](https://chrony-project.org/) as a local NTP server for your network and publishes its key figures (clients, requests, offsets, sync state) as sensors through MQTT discovery. A page in the sidebar shows the sync status, the upstream sources and every client with the time of its last request.
+A Home Assistant app (formerly add-on) that runs [chrony](https://chrony-project.org/) as a local NTP server for your network with a page in the sidebar that shows the sync status, the upstream sources and every client with the time of its last request, a name and a note. Two problem sensors through MQTT discovery tell Home Assistant when the server loses its upstream source or no client asks any more.
 
 ## Installation
 

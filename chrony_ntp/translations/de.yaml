@@ -20,9 +20,6 @@ configuration:
   mqtt_interval:
     name: MQTT-Intervall
     description: Sekunden zwischen zwei Aktualisierungen der Sensoren.
-  active_window:
-    name: Aktiv-Fenster
-    description: Sekunden seit der letzten Anfrage, in denen ein Client als aktiv zählt.
   discovery_prefix:
     name: MQTT-Discovery-Präfix
     description: Präfix, auf dem Home Assistant MQTT-Discovery empfängt.

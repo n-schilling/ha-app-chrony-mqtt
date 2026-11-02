@@ -2,6 +2,28 @@
 
 All notable changes to this app are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the app uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.0] - 2026-11-02
+
+### Added
+
+- Name and note for each client on the web page: the pencil at the end of a row edits them; the name replaces the one from reverse DNS, the note (plain text, up to 120 characters) shows under the address, and the search finds both. Clients with a name or note stay in the list until they are forgotten
+- Forget a client on the web page; it comes back with its next request, counted from then on
+- Sensor **NTP requests missing**: on while no known client asked within its usual time, e.g. after a router change broke the NTP redirect; the web page shows the same in its status
+
+### Changed
+
+- A client counts as active while its last request is less than three of its own request intervals and an hour ago, so clients that ask every hour or once a day no longer flicker between active and inactive. The page keeps each client's interval across restarts
+- The note under the client list says since when requests are counted at the earliest
+
+### Removed
+
+- **Breaking:** the sensors Clients (with its list of clients as attributes), Active clients, NTP requests, NTP requests dropped, Stratum, Last upstream sync, System offset, RMS offset, Root dispersion and Reference source; their values are on the web page. *Sync problem* stays. Delete their long-term statistics under **Developer tools → Statistics** if you no longer need them
+- **Breaking:** the option `active_window`
+
+### Fixed
+
+- A client that asked for the first time right after a restart of chronyd had its requests counted twice on the web page
+
 ## [1.6.0] - 2026-11-01
 
 ### Added

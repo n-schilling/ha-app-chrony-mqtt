@@ -76,37 +76,33 @@ expect 'offline fallback serves the local clock' "$(grep '^local' "${CONF}")" 'l
 expect 'chronyd accepts networks and fallback' "$(chronyd -p -f "${CONF}" > /dev/null 2>&1; echo $?)" 0
 
 export PATH="/tests/stubs:${PATH}" PUBLISHED="${WORK}/published" RETAINED="${WORK}/retained"
+export CHRONY_WEB_STATUS="${WORK}/status.json"
+# What the web page writes on every read of chrony; $1 true/false, $2 its age in seconds
+web_status() { printf '{"at":%d,"requests_missing":%s}' "$(( $(date +%s) - ${2:-0} ))" "$1" > "${CHRONY_WEB_STATUS}"; }
 : > "${RETAINED}"
 last_topic() { awk -F '\t' -v t="$1" '$1 == t { v = $2 } END { print v }' "${PUBLISHED}"; }
 last() { last_topic "chrony/chrony_ntp/$1"; }
-KPI='{"mqtt_interval":300,"active_window":3900,"discovery_prefix":"homeassistant"}'
+KPI='{"mqtt_interval":300,"discovery_prefix":"homeassistant"}'
 
-echo '# Key figures'
+echo '# Problem sensors'
 : > "${PUBLISHED}"
+web_status false
 TRACKING=/tests/fixtures/tracking.csv run_service "${KPI}" "${S6}/mqtt-kpi/run"
-expect 'clients without localhost' "$(last clients)" 3
-expect 'active clients within the window, "never" excluded' "$(last clients_active)" 1
-expect 'NTP requests' "$(last ntp_requests)" 62
-expect 'NTP requests dropped' "$(last ntp_dropped)" 0
-expect 'stratum' "$(last stratum)" 2
-expect 'system offset in ms' "$(last system_offset)" 0.0911
-expect 'RMS offset in ms' "$(last rms_offset)" 0.0685
-expect 'root dispersion in ms' "$(last root_dispersion)" 2.4638
-expect 'reference source by name' "$(last reference)" 192.53.103.108
-expect 'last upstream sync as epoch seconds' "$(last last_sync)" 1788640381
 expect 'no sync problem' "$(last sync_problem)" OFF
-expect 'client attributes' "$(last clients/attr | jq -c '[.active_window_s, (.clients | map(.ip + ":" + (.last_seen | tostring)))]')" \
-    '[3900,["192.0.2.6:120","192.0.2.7:5000","192.0.2.8:4294967295"]]'
+expect 'requests arrive' "$(last requests_missing)" OFF
+expect 'states of the sensors before 2.0.0 cleared' \
+    "$(grep -cE '^chrony/chrony_ntp/(clients|clients/attr|clients_active|ntp_requests|ntp_dropped|stratum|last_sync|system_offset|rms_offset|root_dispersion|reference)	$' "${PUBLISHED}")" 11
+expect 'nothing else published' "$(cut -f1 "${PUBLISHED}" | grep '^chrony/' | sort -u | grep -cvE '/(sync_problem|requests_missing|availability|clients|clients/attr|clients_active|ntp_requests|ntp_dropped|stratum|last_sync|system_offset|rms_offset|root_dispersion|reference)$')" 0
 
 echo '# Discovery'
 DEVICE=homeassistant/device/chrony_ntp/config
 dev() { last_topic "${DEVICE}"; }
 cmp() { dev | jq -c --arg k "$1" '.components[$k]'; }
 expect 'one message for the device' "$(grep -c "^${DEVICE}	" "${PUBLISHED}")" 1
-expect 'every entity in it' "$(dev | jq '.components | length')" 11
+expect 'both problem sensors in it' "$(dev | jq -c '.components | keys')" '["requests_missing","sync_problem"]'
 expect 'no single entity topics' "$(grep -c '^homeassistant/[a-z_]*/chrony_ntp/[a-z_]*/config' "${PUBLISHED}")" 0
-expect 'unique ID unchanged (entity IDs depend on it)' "$(cmp stratum | jq -r .unique_id)" chrony_ntp_stratum
-expect 'platform per entity' "$(cmp sync_problem | jq -r '.platform + " " + .device_class')" 'binary_sensor problem'
+expect 'unique ID unchanged (entity IDs depend on it)' "$(cmp sync_problem | jq -r .unique_id)" chrony_ntp_sync_problem
+expect 'platform per entity' "$(cmp requests_missing | jq -r '.platform + " " + .device_class')" 'binary_sensor problem'
 expect 'chrony version from the image' "$(dev | jq -r '.device.model' | grep -cE '^chrony [0-9]+\.[0-9]+')" 1
 expect 'availability for the whole device' "$(dev | jq -r .availability_topic)" chrony/chrony_ntp/availability
 expect 'origin names the app and its support URL' "$(dev | jq -r '.origin | .name + " " + .support_url')" \
@@ -119,6 +115,21 @@ expect 'online with the states' "$(grep -c '^chrony/chrony_ntp/availability	onli
 expect 'offline on stop' "$(tail -1 "${PUBLISHED}")" 'chrony/chrony_ntp/availability	offline'
 expect 'held connection with a retained last will' \
     "$(grep -c -- '--will-topic chrony/chrony_ntp/availability --will-payload offline --will-retain' "${PUBLISHED}.sub")" 1
+
+echo '# Requests missing'
+: > "${PUBLISHED}"
+web_status true
+TRACKING=/tests/fixtures/tracking.csv run_service "${KPI}" "${S6}/mqtt-kpi/run"
+expect 'requests missing' "$(last requests_missing)" ON
+: > "${PUBLISHED}"
+web_status true 300
+TRACKING=/tests/fixtures/tracking.csv run_service "${KPI}" "${S6}/mqtt-kpi/run"
+expect 'stale status from the web page: unknown' "$(last requests_missing)" None
+: > "${PUBLISHED}"
+rm -f "${CHRONY_WEB_STATUS}"
+TRACKING=/tests/fixtures/tracking.csv run_service "${KPI}" "${S6}/mqtt-kpi/run"
+expect 'no status from the web page: unknown' "$(last requests_missing)" None
+web_status false
 
 echo '# Not synchronised'
 : > "${PUBLISHED}"
@@ -154,13 +165,15 @@ expect 'no state published' "$(grep -c '^chrony/' "${PUBLISHED}")" 0
 expect 'one warning for the whole outage, with the reason' \
     "$(grep -c 'MQTT broker not reachable (Error: Connection refused), retrying every interval' "${WORK}/log")" 1
 expect 'no raw errors from the rounds' "$(grep -c '^Error: ' "${WORK}/log")" 0
-expect 'a round stops at its first failed message (3 rounds + offline on stop)' "$(cat "${PUBLISHED}.calls")" 4
+expect 'a round stops at its first failed message (11 cleared old states + 3 rounds + offline on stop)' \
+    "$(cat "${PUBLISHED}.calls")" 15
 echo '# Broker back'
 : > "${PUBLISHED}"; rm -f "${PUBLISHED}.calls"
-PUB_FAIL=1 ROUNDS=2 TRACKING=/tests/fixtures/tracking.csv run_service "${KPI}" "${S6}/mqtt-kpi/run"
+# The 11 old states cleared at the start, then the first round fail
+PUB_FAIL=12 ROUNDS=2 TRACKING=/tests/fixtures/tracking.csv run_service "${KPI}" "${S6}/mqtt-kpi/run"
 expect 'warning while away' "$(grep -c 'MQTT broker not reachable' "${WORK}/log")" 1
 expect 'back in the log' "$(grep -c 'MQTT broker answers again' "${WORK}/log")" 1
-expect 'states published again' "$(last stratum)" 2
+expect 'states published again' "$(last sync_problem)" OFF
 rm -f "${PUBLISHED}.calls"
 
 echo '# Serving the local clock'

@@ -47,7 +47,6 @@ start_service() {
         bashio::config() {
             case "$1" in
                 mqtt_interval) echo 1 ;;
-                active_window) echo 3900 ;;
                 discovery_prefix) echo homeassistant ;;
                 *) echo null ;;
             esac
@@ -71,12 +70,16 @@ for e in stratum sync_problem; do
     jq -nc --arg u "chrony_ntp_${e}" '{unique_id:$u}' \
         | mosquitto_pub -h broker -r -t "homeassistant/sensor/chrony_ntp/${e}/config" -s
 done
+# A state of a sensor that moved to the web page in 2.0.0
+printf 2 | mosquitto_pub -h broker -r -t chrony/chrony_ntp/stratum -s
 start_service
-wait_for '[[ -n "$(retained chrony/chrony_ntp/stratum)" ]]' 90
-expect 'device message retained' "$(retained "${DEVICE}" | jq '.components | length')" 11
+wait_for '[[ -n "$(retained chrony/chrony_ntp/sync_problem)" ]]' 90
+expect 'device message retained' "$(retained "${DEVICE}" | jq -c '.components | keys')" '["requests_missing","sync_problem"]'
 expect 'old topics removed' "$(retained homeassistant/sensor/chrony_ntp/stratum/config)$(retained homeassistant/sensor/chrony_ntp/sync_problem/config)" ''
 expect 'hand-over logged' "$(grep -c '2 entities of chrony_ntp moved to device discovery' "${WORK}/log")" 1
-expect 'state retained' "$(retained chrony/chrony_ntp/stratum)" 2
+expect 'state retained' "$(retained chrony/chrony_ntp/sync_problem)" OFF
+expect 'unknown without the web page' "$(retained chrony/chrony_ntp/requests_missing)" None
+expect 'state of a gone sensor cleared' "$(retained chrony/chrony_ntp/stratum)" ''
 expect 'online' "$(retained "${AVAIL}")" online
 
 echo '# Regular stop'

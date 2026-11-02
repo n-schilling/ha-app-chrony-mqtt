@@ -1,6 +1,6 @@
 # Chrony NTP + MQTT
 
-Local NTP server (chrony) with its key figures as Home Assistant sensors via MQTT discovery.
+Local NTP server (chrony) with a web page of its state and clients, and problem sensors via MQTT discovery.
 
 ![Supports aarch64 Architecture][aarch64-shield]
 ![Supports amd64 Architecture][amd64-shield]

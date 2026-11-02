@@ -1,18 +1,26 @@
-"""A small read-only web page behind Home Assistant's ingress, laid out like
-Home Assistant's settings: chrony's state, its upstream sources and every
-client that took time from it, with the time of its last request.
+"""A small web page behind Home Assistant's ingress, laid out like Home
+Assistant's settings: chrony's state, its upstream sources and every client
+that took time from it, with the time of its last request.
 
 chrony keeps its counters and client log in memory only, so a restart of the
 app starts its request counters at zero and forgets every client until it
 asks again; some ask once a day. The page therefore keeps the request totals,
-of the server and of each client, and when it first and last saw each client
-in /data, and lists clients chrony no longer knows, until they have been away
-for FORGET_AFTER.
+of the server and of each client, when it first and last saw each client and
+its request interval in /data, and lists clients chrony no longer knows, until
+they have been away for FORGET_AFTER. A client counts as active while its last
+request is less than three of its intervals and GRACE ago. A name and a note
+given to a client on the page are kept with it, and such a client stays until
+it is forgotten on the page.
+
+Every read of chrony also writes STATUS, from which the key figure publisher
+takes the NTP requests missing sensor: no known client asked within its usual
+time, so the server or the way to it is broken.
 
 The page is rendered on the server and needs nothing beyond Python's standard
 library. Its only script takes Home Assistant's theme from the page around
-the ingress frame, sorts and filters the client list, and swaps in a fresh
-copy of the page every REFRESH seconds or when the refresh button is pressed.
+the ingress frame, sorts and filters the client list, edits a client's name
+and note, and swaps in a fresh copy of the page every REFRESH seconds or when
+the refresh button is pressed.
 """
 
 from __future__ import annotations
@@ -28,6 +36,7 @@ import subprocess
 import sys
 import threading
 import time
+import unicodedata
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -37,6 +46,7 @@ PORT = 8099              # the Supervisor's default ingress port
 # The Supervisor's ingress proxy; nothing else may talk to the page
 INGRESS_PEER = "172.30.32.2"
 STORE = Path("/data/clients.json")
+STATUS = Path("/run/chrony-web.json")  # read by the key figure publisher
 PIDFILE = Path("/run/chrony/chronyd.pid")
 COUNTERS = ("requests", "dropped")
 POLL = 15                # seconds between two reads of chronyc
@@ -44,6 +54,16 @@ REFRESH = 30             # seconds between two page updates in the browser
 SAVE_EVERY = 300         # at most one write of the client store per 5 minutes
 FORGET_AFTER = 30 * 86400
 NAME_TTL = 3600          # reverse DNS answers, also missing ones, are kept an hour
+# Clients poll irregularly: active while the last request is less than three
+# intervals and an hour ago
+GRACE = 3600
+DEFAULT_INTERVAL = 10    # log2 seconds; chrony knows no interval before a second request
+NAME_MAX = 40            # characters of a name given on the page
+NOTE_MAX = 120           # characters of a note
+BODY_MAX = 4096          # bytes of a change sent by the page
+# Characters that do not belong in a line of plain text: controls, and the
+# bidirectional overrides that could make a name read differently
+BIDI = set("‪‫‬‭‮⁦⁧⁨⁩")
 NEVER = 4294967295       # chrony's placeholder for "never"
 LOCAL_CLOCK = "7F7F0101"  # chrony's own clock (serve_when_offline)
 LOCALHOST = ("127.0.0.1", "::1")
@@ -63,7 +83,14 @@ TEXT = {
         "all": "All", "active": "Active", "inactive": "Inactive", "search": "Search",
         "no_clients": "No client has asked for the time yet.", "no_match": "No client matches.",
         "ago": "{} ago", "unknown": "–",
-        "active_info": "Active means a request within the last {}. Requests and drops count since first seen.", "chrony_down": "chronyc does not answer.", "loading": "Reading chrony …",
+        "active_info": "Active means the last request is less than three of the client's intervals and {} ago.",
+        "counted": "Requests and drops count since first seen, at the earliest since {}.",
+        "missing": "No client asks any more, last request {}", "expected": "expected every {}",
+        "edit": "Edit", "edit_title": "Edit client", "alias": "Name", "note": "Note", "save": "Save",
+        "cancel": "Cancel", "forget": "Forget",
+        "forget_confirm": "Forget this client? It is listed again with its next request, counted from then on.",
+        "save_failed": "Could not save.",
+        "chrony_down": "chronyc does not answer.", "loading": "Reading chrony …",
         "days": "d", "hours": "h", "minutes": "min", "seconds": "s",
         "states": {"*": "selected", "+": "combined", "-": "not combined", "?": "unreachable",
                    "x": "falseticker", "~": "too variable"},
@@ -81,7 +108,14 @@ TEXT = {
         "name": "Name", "address": "Adresse", "interval": "Intervall", "last_seen": "Letzte Anfrage",
         "first_seen": "Zuerst gesehen", "all": "Alle", "active": "Aktiv", "inactive": "Inaktiv",
         "search": "Suchen", "no_clients": "Noch kein Client hat nach der Zeit gefragt.",
-        "no_match": "Kein Client passt.", "ago": "vor {}", "unknown": "–", "active_info": "Aktiv heißt: eine Anfrage in den letzten {}. Anfragen und Verworfen zählen seit „Zuerst gesehen“.",
+        "no_match": "Kein Client passt.", "ago": "vor {}", "unknown": "–",
+        "active_info": "Aktiv heißt: Die letzte Anfrage liegt weniger als drei Intervalle des Clients und {} zurück.",
+        "counted": "Anfragen und Verworfen zählen seit „Zuerst gesehen“, frühestens seit {}.",
+        "missing": "Kein Client fragt mehr an, letzte Anfrage {}", "expected": "erwartet alle {}",
+        "edit": "Bearbeiten", "edit_title": "Client bearbeiten", "alias": "Name", "note": "Notiz",
+        "save": "Speichern", "cancel": "Abbrechen", "forget": "Vergessen",
+        "forget_confirm": "Diesen Client vergessen? Mit seiner nächsten Anfrage erscheint er wieder und zählt ab dann neu.",
+        "save_failed": "Speichern fehlgeschlagen.",
         "chrony_down": "chronyc antwortet nicht.", "loading": "Chrony wird gelesen …", "days": "d", "hours": "h", "minutes": "min", "seconds": "s",
         "states": {"*": "ausgewählt", "+": "kombiniert", "-": "nicht kombiniert", "?": "nicht erreichbar",
                    "x": "falsche Zeit", "~": "zu schwankend"},
@@ -94,6 +128,7 @@ ICONS = {
     "ok": "M12 2C6.5 2 2 6.5 2 12S6.5 22 12 22 22 17.5 22 12 17.5 2 12 2M10 17L5 12L6.41 10.59L10 14.17L17.59 6.58L19 8L10 17Z",
     "alert": "M13,13H11V7H13M13,17H11V15H13M12,2A10,10 0 0,0 2,12A10,10 0 0,0 12,22A10,10 0 0,0 22,12A10,10 0 0,0 12,2Z",
     "refresh": "M17.65,6.35C16.2,4.9 14.21,4 12,4A8,8 0 0,0 4,12A8,8 0 0,0 12,20C15.73,20 18.84,17.45 19.73,14H17.65C16.83,16.33 14.61,18 12,18A6,6 0 0,1 6,12A6,6 0 0,1 12,6C13.66,6 15.14,6.69 16.22,7.78L13,11H20V4L17.65,6.35Z",
+    "pencil": "M20.71,7.04C21.1,6.65 21.1,6 20.71,5.63L18.37,3.29C18,2.9 17.35,2.9 16.96,3.29L15.12,5.12L18.87,8.87M3,17.25V21H6.75L17.81,9.93L14.06,6.18L3,17.25Z",
     "search": "M9.5,3A6.5,6.5 0 0,1 16,9.5C16,11.11 15.41,12.59 14.44,13.73L14.71,14H15.5L20.5,19L19,20.5L14,15.5V14.71L13.73,14.44C12.59,15.41 11.11,16 9.5,16A6.5,6.5 0 0,1 3,9.5A6.5,6.5 0 0,1 9.5,3M9.5,5C7,5 5,7 5,9.5C5,12 7,14 9.5,14C12,14 14,12 14,9.5C14,7 12,5 9.5,5Z",
 }
 
@@ -173,6 +208,29 @@ table.kv tr:first-child th, table.kv tr:first-child td { border-top: 0; }
 .search svg { width: 20px; height: 20px; }
 .search input { width: 180px; border: 0; outline: 0; background: none; color: var(--primary-text-color); font: inherit; }
 .note { padding: 0 16px 16px; font-size: 12px; color: var(--secondary-text-color); }
+.sub.memo { max-width: 320px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.list td.act { width: 56px; padding-right: 8px; }
+button.edit { display: flex; align-items: center; justify-content: center; width: 40px; height: 40px; padding: 0;
+  border: 0; border-radius: 50%; background: none; color: var(--secondary-text-color); cursor: pointer; }
+button.edit svg { width: 20px; height: 20px; }
+button.edit:hover, .button:hover { background: color-mix(in srgb, var(--primary-text-color) 6%, transparent); }
+dialog { width: min(100% - 32px, 440px); padding: 0; border: 0; border-radius: 28px;
+  background: var(--card-background-color); color: var(--primary-text-color); box-shadow: 0 8px 32px rgba(0,0,0,.3); }
+dialog::backdrop { background: rgba(0,0,0,.32); }
+dialog form { padding: 24px; }
+dialog h2 { margin: 0; font-size: 24px; font-weight: 400; line-height: 32px; }
+dialog .field { display: block; margin-top: 16px; }
+dialog .field > span { display: block; margin-bottom: 4px; font-size: 12px; color: var(--secondary-text-color); }
+dialog input, dialog textarea { width: 100%; padding: 12px; border: 1px solid var(--divider-color); border-radius: 8px;
+  background: none; color: var(--primary-text-color); font: inherit; resize: vertical; }
+dialog input:focus, dialog textarea:focus { outline: 2px solid var(--primary-color); outline-offset: -1px; }
+.count { display: block; text-align: right; font-size: 12px; color: var(--secondary-text-color); }
+.error { min-height: 20px; font-size: 12px; color: var(--error-color); }
+.buttons { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
+.buttons .spacer { flex: 1; }
+.button { height: 40px; padding: 0 12px; border: 0; border-radius: 20px; background: none; color: var(--primary-color);
+  font: inherit; font-weight: 500; cursor: pointer; }
+.button.danger { color: var(--error-color); }
 @media (max-width: 600px) {
   .opt { display: none; }
   .search { margin-left: 0; flex: 1 0 100%; } .search input { width: 100%; }
@@ -272,6 +330,49 @@ SCRIPT = """(() => {
   document.addEventListener("click", (e) => {
     if (e.target.closest("#refresh")) { e.preventDefault(); update(true); }
   });
+  // A client's name and note, and forgetting it. JSON only: a form of another
+  // site cannot send it without asking first
+  const dialog = () => document.querySelector("#edit");
+  const field = (id) => document.querySelector("#edit-" + id);
+  const count = () => { field("count").textContent = field("note").value.length + "/" + field("note").maxLength; };
+  const change = async (body) => {
+    const d = dialog();
+    try {
+      const url = new URL(location.href);
+      url.search = "";
+      const answer = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" },
+                                        body: JSON.stringify({ ip: d.dataset.ip, ...body }) });
+      if (!answer.ok) throw new Error(answer.status);
+      d.close();
+      update(true);
+    } catch (err) {
+      field("error").textContent = d.dataset.failed;
+    }
+  };
+  document.addEventListener("click", (e) => {
+    const edit = e.target.closest("button.edit"), d = dialog();
+    if (edit) {
+      const row = edit.closest("tr");
+      d.dataset.ip = row.dataset.addr;
+      field("addr").textContent = row.dataset.addr;
+      field("name").value = row.dataset.alias;
+      field("name").placeholder = row.dataset.dns || row.dataset.addr;
+      field("note").value = row.dataset.note;
+      field("error").textContent = "";
+      count();
+      d.showModal();
+      field("name").focus();
+    }
+    if (e.target.closest("#edit-forget") && confirm(field("forget").dataset.confirm)) change({ action: "forget" });
+    if (e.target.closest("#edit-cancel")) d.close();
+  });
+  // Save, also with Enter in the name
+  document.addEventListener("submit", (e) => {
+    if (!e.target.closest("#edit")) return;
+    e.preventDefault();
+    change({ action: "edit", name: field("name").value, note: field("note").value });
+  });
+  document.addEventListener("input", (e) => { if (e.target.id === "edit-note") count(); });
   setInterval(() => { if (!document.hidden) update(false); }, REFRESH * 1000);
 })();""".replace("NAMES", json.dumps(THEME_VARS)).replace("REFRESH", str(REFRESH))
 
@@ -331,6 +432,22 @@ def sync_problem(tracking: dict) -> bool:
     return tracking["stratum"] >= 16 or tracking["leap"] != "Normal" or tracking["refid"] == LOCAL_CLOCK
 
 
+def expected(interval: int | None) -> float:
+    """Seconds after its last request within which a client counts as active."""
+    return 3 * 2.0 ** (DEFAULT_INTERVAL if interval is None else interval) + GRACE
+
+
+def clean(value, limit: int) -> str:
+    """A name or note as one line of plain text with single spaces."""
+    if not isinstance(value, str):
+        raise ValueError("text expected")
+    text = " ".join("".join(" " if unicodedata.category(ch) in ("Cc", "Cs", "Co", "Cn") or ch in BIDI else ch
+                            for ch in value).split())
+    if len(text) > limit:
+        raise ValueError(f"more than {limit} characters")
+    return text
+
+
 # --- Names and the client store ------------------------------------------------------
 class Names:
     """Host names of client addresses by reverse DNS, as the router hands them out."""
@@ -357,18 +474,21 @@ class Names:
 
 
 class Clients:
-    """When each client was first and last seen, and the request totals,
-    kept across restarts."""
+    """When each client was first and last seen, its interval, name and note,
+    and the request totals, kept across restarts."""
 
     def __init__(self, path: Path) -> None:
         self.path = path
         self.data: dict[str, dict] = {}
         self.totals: dict = {}
+        # Forgotten clients chrony still knows, with their counters then
+        self.forgotten: dict[str, dict] = {}
         self._saved = 0.0
         try:
             stored = json.loads(path.read_text())
             self.data = stored["clients"]
             self.totals = stored.get("totals") or {}
+            self.forgotten = stored.get("forgotten") or {}
         except (OSError, ValueError, KeyError, TypeError, AttributeError):
             pass
 
@@ -378,14 +498,58 @@ class Clients:
         chronyd runs; after a new chronyd, or when a counter got smaller
         (chrony dropped the client from its log), what was counted before
         goes into the base. A counter seen for the first time is taken as is."""
+        first = any(key not in entry for key in COUNTERS)
         for key in COUNTERS:
             entry.setdefault("base_" + key, 0)
-            entry.setdefault(key, values[key])
-        if restarted or any(values[key] < entry[key] for key in COUNTERS):
+        if not first and (restarted or any(values[key] < entry[key] for key in COUNTERS)):
             for key in COUNTERS:
                 entry["base_" + key] += entry[key]
         for key in COUNTERS:
             entry[key] = values[key]
+
+    @staticmethod
+    def active(entry: dict, now: float) -> bool:
+        return now - entry["last_seen"] < expected(entry.get("interval"))
+
+    def requests_missing(self, now: float) -> bool:
+        """Clients are known, but none asked within its usual time."""
+        return bool(self.data) and not any(self.active(e, now) for e in self.data.values())
+
+    def edit(self, ip: str, alias: str, note: str, now: float) -> bool:
+        entry = self.data.get(ip)
+        if entry is None:
+            return False
+        for key, value in (("alias", alias), ("note", note)):
+            if value:
+                entry[key] = value
+            else:
+                entry.pop(key, None)
+        self.save(now)
+        return True
+
+    def forget(self, ip: str, live: dict | None, now: float) -> bool:
+        """Drops a client. While chrony still knows it, it comes back only
+        with a new request, counted from then on."""
+        if self.data.pop(ip, None) is None:
+            return False
+        if live is not None:
+            self.forgotten[ip] = {key: live[key] for key in COUNTERS}
+        self.save(now)
+        return True
+
+    def _revive(self, ip: str, values: dict, seen: int) -> dict | None:
+        """The entry of a client not in the list, None while it is forgotten
+        and has not asked again."""
+        gone = self.forgotten.get(ip)
+        if gone is not None and all(values[key] == gone[key] for key in COUNTERS):
+            return None
+        self.forgotten.pop(ip, None)
+        entry = {"first_seen": seen, "last_seen": seen, "name": ""}
+        if gone is not None and all(values[key] >= gone[key] for key in COUNTERS):
+            # Only what came after it was forgotten counts
+            for key in COUNTERS:
+                entry["base_" + key] = -gone[key]
+        return self.data.setdefault(ip, entry)
 
     @staticmethod
     def sum(entry: dict, key: str) -> int:
@@ -413,15 +577,24 @@ class Clients:
             for ip, entry in self.data.items():
                 if ip not in live and "requests" in entry:
                     self.add(entry, {key: 0 for key in COUNTERS}, True)
+        # A forgotten client chrony no longer knows is new with its next request
+        for ip in [ip for ip in self.forgotten if restarted or ip not in live]:
+            del self.forgotten[ip]
         # A client without an NTP request only used chronyc
         for c in (c for c in clients if c["last"] is not None):
             seen = round(now - c["last"])
-            entry = self.data.setdefault(c["ip"], {"first_seen": seen, "last_seen": seen, "name": ""})
+            entry = self.data.get(c["ip"]) or self._revive(c["ip"], c, seen)
+            if entry is None:
+                continue
             self.add(entry, c, restarted)
             entry["last_seen"] = max(entry["last_seen"], seen)
             entry["first_seen"] = min(entry["first_seen"], seen)
             entry["name"] = names.get(c["ip"]) or entry["name"]
-        for ip in [ip for ip, e in self.data.items() if now - e["last_seen"] > FORGET_AFTER]:
+            if c["interval"] is not None:
+                entry["interval"] = c["interval"]
+        # A client with a name or note given on the page stays until it is forgotten there
+        for ip in [ip for ip, e in self.data.items()
+                   if now - e["last_seen"] > FORGET_AFTER and not (e.get("alias") or e.get("note"))]:
             del self.data[ip]
         if now - self._saved >= SAVE_EVERY:
             self.save(now)
@@ -429,7 +602,8 @@ class Clients:
     def save(self, now: float) -> None:
         tmp = self.path.with_suffix(".tmp")
         try:
-            tmp.write_text(json.dumps({"clients": self.data, "totals": self.totals}, sort_keys=True))
+            tmp.write_text(json.dumps({"clients": self.data, "totals": self.totals, "forgotten": self.forgotten},
+                                      sort_keys=True))
             os.replace(tmp, self.path)
             self._saved = now
         except OSError as err:
@@ -439,11 +613,13 @@ class Clients:
 class State:
     """The latest read of chrony, renewed in the background every POLL seconds."""
 
-    def __init__(self, clients: Clients, names: Names | None = None, read=read_chrony, clock=time.time) -> None:
+    def __init__(self, clients: Clients, names: Names | None = None, read=read_chrony, clock=time.time,
+                 status: Path | None = None) -> None:
         self.clients = clients
         self.names = names or Names()
         self._read = read
         self._clock = clock
+        self._status = status
         self.lock = threading.Lock()
         self.chrony: dict | None = None
         self.at = 0.0
@@ -475,6 +651,37 @@ class State:
             if chrony is not None:
                 restarted = self.clients.count(chrony, now)
                 self.clients.update(chrony["clients"], names, now, restarted)
+            # Judged from the kept clients also while chronyc fails: a chronyd
+            # that does not answer serves nobody either
+            missing = self.clients.requests_missing(now)
+        self._write_status({"at": round(now), "requests_missing": missing})
+
+    def _write_status(self, status: dict) -> None:
+        if self._status is None:
+            return
+        tmp = self._status.with_suffix(".tmp")
+        try:
+            tmp.write_text(json.dumps(status))
+            os.replace(tmp, self._status)
+        except OSError as err:
+            LOGGER.debug("Cannot write %s: %s", self._status, err)
+
+    def change(self, body: dict) -> int:
+        """A change sent by the page; the HTTP status of the answer."""
+        ip, action = body.get("ip"), body.get("action")
+        if not isinstance(ip, str):
+            raise ValueError("address expected")
+        now = self._clock()
+        with self.lock:
+            if action == "edit":
+                done = self.clients.edit(ip, clean(body.get("name", ""), NAME_MAX),
+                                         clean(body.get("note", ""), NOTE_MAX), now)
+            elif action == "forget":
+                live = next((c for c in (self.chrony or {}).get("clients", []) if c["ip"] == ip), None)
+                done = self.clients.forget(ip, live, now)
+            else:
+                raise ValueError("unknown action")
+        return 204 if done else 404
 
     def run(self) -> None:
         while True:
@@ -567,6 +774,9 @@ def status_card(f: Format, chrony: dict, clients: Clients, now: float) -> str:
         reason = (t["local"] if tr["refid"] == LOCAL_CLOCK else
                   t["unsynced"] if tr["stratum"] >= 16 else t["leap"].format(tr["leap"]))
         state = f'<div class="state bad">{icon("alert")}{esc(reason)}</div>'
+    if clients.requests_missing(now):
+        last = max(e["last_seen"] for e in clients.data.values())
+        state += f'<div class="state bad">{icon("alert")}{esc(t["missing"].format(f.ago(now - last)))}</div>'
     since = t["since"].format(f.day(clients.totals["since"]))
     last_sync = (f'{esc(f.ago(now - tr["reftime"]))}<span class="sub">{esc(f.when(tr["reftime"]))}</span>'
                  if tr["reftime"] else t["unknown"])
@@ -621,7 +831,7 @@ def short_name(name: str) -> str:
     return name.split(".", 1)[0] if name and not name.replace(".", "").isdigit() else name
 
 
-def clients_card(f: Format, state: State, window: int, now: float) -> str:
+def clients_card(f: Format, state: State, now: float) -> str:
     t = f.t
     live = {c["ip"]: c for c in (state.chrony or {}).get("clients", [])}
     rows = []
@@ -630,31 +840,39 @@ def clients_card(f: Format, state: State, window: int, now: float) -> str:
         c = live.get(ip)
         last_seen = entry["last_seen"]
         ago = now - last_seen
-        is_active = ago <= window
+        is_active = Clients.active(entry, now)
         active += is_active
-        name = entry["name"]
-        shown = short_name(name) or ip
-        text = " ".join((name, ip)).lower()
+        name, alias, note = entry["name"], entry.get("alias", ""), entry.get("note", "")
+        shown = alias or short_name(name) or ip
+        text = " ".join((alias, name, ip, note)).lower()
         last = f'{esc(f.ago(ago))}<span class="sub">{esc(f.when(last_seen))}</span>'
         counted = "requests" in entry
         requests = esc(f.int(Clients.sum(entry, "requests"))) if counted else t["unknown"]
         dropped = esc(f.int(Clients.sum(entry, "dropped"))) if counted else t["unknown"]
-        interval = esc(f.log2(c["interval"])) if c else t["unknown"]
+        # chrony's interval while it knows the client, else the last one it knew
+        exponent = c["interval"] if c and c["interval"] is not None else entry.get("interval")
+        interval = esc(f.log2(exponent))
         sort_ip = ".".join(p.zfill(3) for p in ip.split(".")) if "." in ip else ip
+        sub = f'<span class="sub">{esc(ip)}</span>' if shown != ip else ""
+        sub += f'<span class="sub memo" title="{esc(note)}">{esc(note)}</span>' if note else ""
+        dot = esc(t["active" if is_active else "inactive"] + " · " + t["expected"].format(f.log2(exponent))
+                  if exponent is not None else t["active" if is_active else "inactive"])
         rows.append(
             f'<tr data-name="{esc(shown.lower())}" data-ip="{esc(sort_ip)}" data-text="{esc(text)}"'
+            f' data-addr="{esc(ip)}" data-alias="{esc(alias)}" data-note="{esc(note)}" data-dns="{esc(short_name(name))}"'
             f' data-state="{"active" if is_active else "inactive"}"'
             f' data-requests="{Clients.sum(entry, "requests") if counted else ""}"'
             f' data-dropped="{Clients.sum(entry, "dropped") if counted else ""}"'
-            f' data-interval="{"" if not c or c["interval"] is None else c["interval"]}"'
+            f' data-interval="{"" if exponent is None else exponent}"'
             f' data-last="{round(ago)}" data-first="{entry["first_seen"]}">'
-            f'<td><span class="dot{" on" if is_active else ""}" title="{esc(t["active" if is_active else "inactive"])}"></span></td>'
-            f'<td title="{esc(name)}">{esc(shown)}{f'<span class="sub">{esc(ip)}</span>' if shown != ip else ""}</td>'
+            f'<td><span class="dot{" on" if is_active else ""}" title="{dot}"></span></td>'
+            f'<td title="{esc(name or ip)}">{esc(shown)}{sub}</td>'
             f'<td class="n">{requests}</td><td class="n opt">{dropped}</td><td class="n opt">{interval}</td>'
-            f'<td class="n">{last}</td><td class="n opt">{esc(f.when(entry["first_seen"]))}</td></tr>')
+            f'<td class="n">{last}</td><td class="n opt">{esc(f.when(entry["first_seen"]))}</td>'
+            f'<td class="act"><button class="edit" title="{esc(t["edit"])}">{icon("pencil")}</button></td></tr>')
     total = len(rows)
-    empty = "" if rows else f'<tr><td colspan="7" class="muted">{esc(t["no_clients"])}</td></tr>'
-    rows.append(f'<tr class="none" hidden><td colspan="7" class="muted">{esc(t["no_match"])}</td></tr>')
+    empty = "" if rows else f'<tr><td colspan="8" class="muted">{esc(t["no_clients"])}</td></tr>'
+    rows.append(f'<tr class="none" hidden><td colspan="8" class="muted">{esc(t["no_match"])}</td></tr>')
     chips = "".join(f'<button class="chip{" on" if key == "all" else ""}" data-show="{key}">{esc(t[key])} · {n}</button>'
                     for key, n in (("all", total), ("active", active), ("inactive", total - active)))
     toolbar = (f'<div class="toolbar">{chips}<label class="search">{icon("search")}'
@@ -664,13 +882,30 @@ def clients_card(f: Format, state: State, window: int, now: float) -> str:
             f'<th class="n opt" data-sort="dropped">{esc(t["dropped"])}</th>'
             f'<th class="n opt" data-sort="interval">{esc(t["interval"])}</th>'
             f'<th class="n" data-sort="last">{esc(t["last_seen"])}</th>'
-            f'<th class="n opt" data-sort="first">{esc(t["first_seen"])}</th></tr></thead>')
-    note = f'<div class="note">{esc(t["active_info"].format(f.duration(window)))}</div>'
+            f'<th class="n opt" data-sort="first">{esc(t["first_seen"])}</th><th></th></tr></thead>')
+    since = state.clients.totals.get("since")
+    info = t["active_info"].format(f.duration(GRACE)) + (" " + t["counted"].format(f.day(since)) if since else "")
+    note = f'<div class="note">{esc(info)}</div>'
     return card(t["clients"], toolbar + f'<div class="scroll"><table class="list" id="clients">{head}'
                 f'<tbody>{"".join(rows)}{empty}</tbody></table></div>' + note, padded=False)
 
 
-def render(state: State, lang: str, window: int, slug: str | None, now: float | None = None) -> str:
+def edit_dialog(t: dict) -> str:
+    """One dialog for every client; the script fills it from the row."""
+    return (f'<dialog id="edit" data-failed="{esc(t["save_failed"])}"><form>'
+            f'<h2>{esc(t["edit_title"])}</h2><div class="muted" id="edit-addr"></div>'
+            f'<label class="field"><span>{esc(t["alias"])}</span>'
+            f'<input id="edit-name" maxlength="{NAME_MAX}" autocomplete="off"></label>'
+            f'<label class="field"><span>{esc(t["note"])}</span>'
+            f'<textarea id="edit-note" maxlength="{NOTE_MAX}" rows="3"></textarea>'
+            f'<span class="count" id="edit-count"></span></label><div class="error" id="edit-error"></div>'
+            f'<div class="buttons"><button type="button" class="button danger" id="edit-forget"'
+            f' data-confirm="{esc(t["forget_confirm"])}">{esc(t["forget"])}</button><span class="spacer"></span>'
+            f'<button type="button" class="button" id="edit-cancel">{esc(t["cancel"])}</button>'
+            f'<button type="submit" class="button">{esc(t["save"])}</button></div></form></dialog>')
+
+
+def render(state: State, lang: str, slug: str | None, now: float | None = None) -> str:
     f = Format(lang)
     t = f.t
     now = state._clock() if now is None else now
@@ -681,7 +916,7 @@ def render(state: State, lang: str, window: int, slug: str | None, now: float | 
                         f'<div class="state bad">{icon("alert")}{esc(t["chrony_down"])}</div>')
         else:
             body = f'<div class="cards">{status_card(f, chrony, state.clients, now)}<div>{sources_card(f, chrony)}{accuracy_card(f, chrony)}</div></div>'
-        body += clients_card(f, state, window, now)
+        body += clients_card(f, state, now)
     # The settings are Home Assistant's own page, outside the ingress frame
     stamp = time.strftime("%H:%M:%S", time.localtime(state.at)) if state.at else ""
     actions = f'<span class="stamp opt">{esc(t["as_of"].format(stamp))}</span>' if stamp else ""
@@ -692,7 +927,8 @@ def render(state: State, lang: str, window: int, slug: str | None, now: float | 
             '<meta name="viewport" content="width=device-width, initial-scale=1">'
             f"<title>{esc(t['title'])}</title><style>{STYLE}</style><script>{SCRIPT}</script></head><body>"
             f'<header><h1>{esc(t["title"])}</h1><div class="actions" id="actions">{actions}</div></header>'
-            f"<main>{body}</main></body></html>")
+            # The dialog stays outside main, which the script swaps for a fresh copy
+            f"<main>{body}</main>{edit_dialog(t)}</body></html>")
 
 
 # --- The server ------------------------------------------------------------------------------
@@ -705,21 +941,44 @@ class Server(ThreadingHTTPServer):
         self.server_name, self.server_port = "chrony-web", self.server_address[1]
 
 
-def handler(state: State, window: int, slug: str | None, allowed: set[str]):
+def handler(state: State, slug: str | None, allowed: set[str]):
     class Handler(BaseHTTPRequestHandler):
         server_version = "chrony-web"
 
-        def do_GET(self) -> None:  # noqa: N802 (the standard library's name)
+        def _refused(self) -> bool:
             if allowed and self.client_address[0] not in allowed:
                 self._send(403, "text/plain", b"only through Home Assistant")
             elif self.path.split("?", 1)[0] != "/":
                 self._send(404, "text/plain", b"not found")
             else:
-                # The refresh button asks for a read of chrony at once
-                if "refresh=1" in self.path.partition("?")[2].split("&"):
-                    state.refresh()
-                page = render(state, lang_of(self.headers.get("Accept-Language")), window, slug)
-                self._send(200, "text/html; charset=utf-8", page.encode())
+                return False
+            return True
+
+        def do_GET(self) -> None:  # noqa: N802 (the standard library's name)
+            if self._refused():
+                return
+            # The refresh button asks for a read of chrony at once
+            if "refresh=1" in self.path.partition("?")[2].split("&"):
+                state.refresh()
+            page = render(state, lang_of(self.headers.get("Accept-Language")), slug)
+            self._send(200, "text/html; charset=utf-8", page.encode())
+
+        def do_POST(self) -> None:  # noqa: N802
+            if self._refused():
+                return
+            # Only the page's script sends JSON; a form of another site cannot
+            if self.headers.get_content_type() != "application/json":
+                self._send(415, "text/plain", b"JSON expected")
+                return
+            try:
+                length = int(self.headers.get("Content-Length") or 0)
+                if not 0 < length <= BODY_MAX:
+                    raise ValueError("no or too large a body")
+                code = state.change(json.loads(self.rfile.read(length)))
+            except (ValueError, TypeError, AttributeError) as err:
+                self._send(400, "text/plain", str(err).encode())
+                return
+            self._send(code, "text/plain", b"")
 
         def _send(self, code: int, kind: str, body: bytes) -> None:
             self.send_response(code)
@@ -738,14 +997,13 @@ def handler(state: State, window: int, slug: str | None, allowed: set[str]):
 def main() -> None:
     logging.basicConfig(level=logging.DEBUG if os.environ.get("LOG_LEVEL") == "debug" else logging.INFO,
                         format="[%(asctime)s] %(levelname)s: %(message)s", datefmt="%H:%M:%S", stream=sys.stdout)
-    window = int(os.environ.get("ACTIVE_WINDOW", "3900"))
     # The app's slug, e.g. 8af13b69_chrony_ntp; the Supervisor names the container's host after it
     slug = os.environ.get("HOSTNAME", "").replace("-", "_") or None
-    state = State(Clients(STORE))
+    state = State(Clients(STORE), status=STATUS)
     threading.Thread(target=state.run, daemon=True).start()
     # s6 stops the service with TERM; leave through finally to save the store
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
-    server = Server(("0.0.0.0", PORT), handler(state, window, slug, {INGRESS_PEER}))
+    server = Server(("0.0.0.0", PORT), handler(state, slug, {INGRESS_PEER}))
     LOGGER.info("Web page on port %d (ingress)", PORT)
     try:
         server.serve_forever()
