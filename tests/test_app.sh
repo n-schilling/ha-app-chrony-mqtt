@@ -10,7 +10,6 @@ readonly S6=/etc/s6-overlay/s6-rc.d
 readonly CONF=/etc/chrony/chrony.conf
 WORK=$(mktemp -d)
 FAILED=0
-cp "${CONF}" "${WORK}/chrony.conf.orig"
 
 expect() {
     local name=$1 got=$2 want=$3
@@ -47,20 +46,23 @@ run_service() {
 }
 
 init_config() {
-    cp "${WORK}/chrony.conf.orig" "${CONF}"
     run_service "$1" "${S6}/init-chrony/run"
 }
 
 echo '# Configuration'
-init_config '{"mode":"pool","ntp_pool":"ptbtime1.ptb.de","ntp_server":[]}'
-expect 'pool mode writes the pool' "$(grep -E '^(pool|server) ' "${CONF}")" 'pool ptbtime1.ptb.de iburst'
-expect 'pool mode steps the clock from it' "$(grep '^initstepslew' "${CONF}")" 'initstepslew 10 ptbtime1.ptb.de'
+init_config '{"mode":"pool","ntp_pool":"time.example.net","ntp_server":[]}'
+expect 'pool mode writes the pool' "$(grep -E '^(pool|server) ' "${CONF}")" 'pool time.example.net iburst'
+expect 'drift kept in the data folder' "$(grep '^driftfile' "${CONF}")" 'driftfile /data/chrony/drift'
+expect 'drift folder belongs to chronyd' "$(stat -c '%U %a' /data/chrony)" 'chrony 750'
+expect 'steps only in the first updates' "$(grep '^makestep' "${CONF}")" 'makestep 1 3'
+expect 'rate limit for clients' "$(grep '^ratelimit' "${CONF}")" 'ratelimit interval 1 burst 16'
+expect 'bounded client log' "$(grep -c '^clientloglimit ' "${CONF}")" 1
+expect 'no initstepslew' "$(grep -c '^initstepslew' "${CONF}")" 0
 expect 'chronyd accepts the pool configuration' "$(chronyd -p -f "${CONF}" > /dev/null 2>&1; echo $?)" 0
 
 init_config '{"mode":"server","ntp_pool":"","ntp_server":["a.example","b.example","c.example"]}'
 expect 'server mode writes every server' "$(grep -c '^server .* iburst$' "${CONF}")" 3
-expect 'server mode steps the clock from all of them' "$(grep '^initstepslew' "${CONF}")" \
-    'initstepslew 10 a.example b.example c.example'
+expect 'written anew: no pool of the run before' "$(grep -c '^pool ' "${CONF}")" 0
 expect 'chronyd accepts the server configuration' "$(chronyd -p -f "${CONF}" > /dev/null 2>&1; echo $?)" 0
 
 init_config '{"mode":"pool","ntp_pool":"","ntp_server":[]}'
@@ -76,7 +78,7 @@ expect 'offline fallback serves the local clock' "$(grep '^local' "${CONF}")" 'l
 expect 'chronyd accepts networks and fallback' "$(chronyd -p -f "${CONF}" > /dev/null 2>&1; echo $?)" 0
 
 export PATH="/tests/stubs:${PATH}" PUBLISHED="${WORK}/published" RETAINED="${WORK}/retained"
-export CHRONY_WEB_STATUS="${WORK}/status.json"
+export CHRONY_WEB_STATUS="${WORK}/status.json" MQTT_CONFIG="${WORK}/mqtt"
 # What the web page writes on every read of chrony; $1 true/false, $2 its age in seconds
 web_status() { printf '{"at":%d,"requests_missing":%s}' "$(( $(date +%s) - ${2:-0} ))" "$1" > "${CHRONY_WEB_STATUS}"; }
 : > "${RETAINED}"
@@ -108,7 +110,14 @@ expect 'availability for the whole device' "$(dev | jq -r .availability_topic)" 
 expect 'origin names the app and its support URL' "$(dev | jq -r '.origin | .name + " " + .support_url')" \
     'Chrony NTP + MQTT https://github.com/n-schilling/ha-app-chrony-mqtt'
 expect 'device links to the app page' "$(dev | jq -r .device.configuration_url)" \
-    "homeassistant://hassio/addon/${HOSTNAME//-/_}/info"
+    "homeassistant://config/app/${HOSTNAME//-/_}/info"
+
+echo '# Broker credentials'
+expect 'broker and credentials in the option file' "$(cat "${MQTT_CONFIG}/mosquitto_pub")" \
+    $'-h core-mosquitto\n-p 1883\n-u addons\n-P secret'
+expect 'same for mosquitto_sub' "$(diff -q "${MQTT_CONFIG}/mosquitto_pub" "${MQTT_CONFIG}/mosquitto_sub" > /dev/null; echo $?)" 0
+expect 'readable by root only' "$(stat -c '%a' "${MQTT_CONFIG}/mosquitto_pub" "${MQTT_CONFIG}")" $'600\n700'
+expect 'no password on a command line' "$(grep -c secret "${PUBLISHED}.sub")" 0
 
 echo '# Availability'
 expect 'online with the states' "$(grep -c '^chrony/chrony_ntp/availability	online$' "${PUBLISHED}")" 1
@@ -175,6 +184,15 @@ expect 'warning while away' "$(grep -c 'MQTT broker not reachable' "${WORK}/log"
 expect 'back in the log' "$(grep -c 'MQTT broker answers again' "${WORK}/log")" 1
 expect 'states published again' "$(last sync_problem)" OFF
 rm -f "${PUBLISHED}.calls"
+
+echo '# Broker not up for the discovery'
+: > "${PUBLISHED}"; rm -f "${PUBLISHED}.dcalls"
+DISC_FAIL=1 ROUNDS=2 TRACKING=/tests/fixtures/tracking.csv run_service "${KPI}" "${S6}/mqtt-kpi/run"
+expect 'device announced with the next round' "$(grep -c "^${DEVICE}	" "${PUBLISHED}")" 1
+expect 'announced once it went through' "$(grep -c 'Device announced' "${WORK}/log")" 1
+expect 'states published in both rounds' "$(grep -c '^chrony/chrony_ntp/sync_problem	' "${PUBLISHED}")" 2
+expect 'no raw errors from the discovery' "$(grep -c '^Error: ' "${WORK}/log")" 0
+rm -f "${PUBLISHED}.dcalls"
 
 echo '# Serving the local clock'
 : > "${PUBLISHED}"

@@ -46,7 +46,7 @@ start_service() {
         source /usr/lib/bashio/bashio.sh
         bashio::config() {
             case "$1" in
-                mqtt_interval) echo 1 ;;
+                mqtt_interval) echo "${MQTT_INTERVAL:-1}" ;;
                 discovery_prefix) echo homeassistant ;;
                 *) echo null ;;
             esac
@@ -95,6 +95,23 @@ kill_all
 wait_for '[[ "$(retained "${AVAIL}")" == offline ]]' 10
 expect 'offline through the last will' "$(retained "${AVAIL}")" offline
 expect 'second start found nothing to hand over' "$(grep -c 'moved to device discovery' "${WORK}/log")" 1
+
+echo '# Reconnect of the availability connection'
+# A long interval: only the reconnect can bring "online" and the device back soon
+MQTT_INTERVAL=3600 start_service
+wait_for '[[ "$(retained "${AVAIL}")" == online ]]' 90
+# The broker lost the device message, and the held connection breaks
+mosquitto_pub -h broker -r -t "${DEVICE}" -n
+for p in /proc/[0-9]*; do
+    [[ "$(tr '\0' ' ' < "${p}/cmdline" 2>/dev/null)" == mosquitto_sub*-availability* ]] && kill -9 "${p#/proc/}"
+done
+wait_for '[[ "$(retained "${AVAIL}")" == offline ]]' 10
+expect 'last will after the break' "$(retained "${AVAIL}")" offline
+wait_for '[[ "$(retained "${AVAIL}")" == online ]]' 30
+expect 'online again after the reconnect' "$(retained "${AVAIL}")" online
+expect 'device announced again' "$(retained "${DEVICE}" | jq -c '.components | keys')" '["requests_missing","sync_problem"]'
+kill -TERM "${SERVICE}"
+wait "${SERVICE}"
 
 if (( FAILED )); then
     echo '--- service log:'

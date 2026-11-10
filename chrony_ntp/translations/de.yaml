@@ -25,6 +25,6 @@ configuration:
     description: Präfix, auf dem Home Assistant MQTT-Discovery empfängt.
   log_level:
     name: Log-Level
-    description: "Wie viel die App in ihr Log schreibt: info, warning oder error."
+    description: "Wie viel die App in ihr Log schreibt: debug, info, warning oder error."
 network:
   123/udp: NTP (Network Time Protocol)

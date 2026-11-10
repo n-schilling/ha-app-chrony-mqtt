@@ -1,8 +1,8 @@
 #!/command/with-contenv bashio
 # shellcheck shell=bash
 readonly CHRONY_CONF='/etc/chrony/chrony.conf'
+readonly CHRONY_BASE='/usr/local/share/chrony/chrony.conf'
 declare mode
-declare -a serverlist
 
 if bashio::config.equals 'mode' 'pool' && bashio::config.is_empty 'ntp_pool'; then
     bashio::exit.nok 'mode is pool, but ntp_pool is empty'
@@ -11,13 +11,16 @@ if bashio::config.equals 'mode' 'server' && bashio::config.is_empty 'ntp_server'
     bashio::exit.nok 'mode is server, but ntp_server is empty'
 fi
 
+# Written anew on every start, also when the container is not new
+cp "${CHRONY_BASE}" "${CHRONY_CONF}"
+# The drift file is written by chronyd after it gave up root
+install -d -o chrony -g chrony -m 0750 /data/chrony
+
 mode=$(bashio::config 'mode')
 bashio::log.info "NTP mode: ${mode}"
 for server in $(bashio::config "ntp_${mode}"); do
     echo "${mode} ${server} iburst" >> ${CHRONY_CONF}
-    serverlist+=("${server}")
 done
-echo "initstepslew 10 ${serverlist[*]}" >> ${CHRONY_CONF}
 
 # Who may take time from this server; the schema only lets addresses and
 # prefixes through. Empty serves every client that reaches port 123.

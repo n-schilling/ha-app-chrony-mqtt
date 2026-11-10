@@ -1,9 +1,10 @@
 name: Chrony NTP + MQTT
-version: "2.0.0"
+version: "2.1.0"
 slug: chrony_ntp
 description: Local NTP server (chrony) with a web page of its state and clients, and problem sensors via MQTT discovery
 url: https://github.com/n-schilling/ha-app-chrony-mqtt
 startup: system
+homeassistant: 2026.11.0
 arch:
   - aarch64
   - amd64
@@ -43,4 +44,4 @@ schema:
   serve_when_offline: bool
   mqtt_interval: int(60,3600)
   discovery_prefix: str
-  log_level: list(info|warning|error)
+  log_level: list(debug|info|warning|error)

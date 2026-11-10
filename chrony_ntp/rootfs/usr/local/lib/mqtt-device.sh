@@ -19,7 +19,8 @@ md_retained() {
 
 # md_announce <device ID> <payload> [<filter of the single entity topics>]
 # The payload holds device, origin and components; each component has its
-# platform and unique ID.
+# platform and unique ID. Fails when the broker does not take the device
+# message.
 md_announce() {
     local id=$1 payload=$2 legacy=${3:-} topic="${DISCOVERY_PREFIX}/device/$1/config"
     local -a singles=()
@@ -43,9 +44,9 @@ md_announce() {
         | with_entries(select(.key as $k | ($new.components | has($k)) | not))
         | map_values({platform: (.platform // .p)})' <<< "${before}" 2>/dev/null) || gone=''
     if [[ -n "${gone}" && "${gone}" != '{}' ]]; then
-        jq -c --argjson gone "${gone}" '.components += $gone' <<< "${payload}" | md_pub "${topic}"
+        jq -c --argjson gone "${gone}" '.components += $gone' <<< "${payload}" | md_pub "${topic}" || return 1
     fi
-    printf '%s' "${payload}" | md_pub "${topic}"
+    printf '%s' "${payload}" | md_pub "${topic}" || return 1
 
     # 3. The single entity topics go once Home Assistant has taken them over
     if (( ${#singles[@]} > 0 )); then
