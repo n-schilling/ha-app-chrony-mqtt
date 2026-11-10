@@ -7,3 +7,8 @@ updates:
     groups:
       actions:
         patterns: ["*"]
+  # The base image in chrony_ntp/Dockerfile
+  - package-ecosystem: docker
+    directory: /chrony_ntp
+    schedule:
+      interval: weekly
