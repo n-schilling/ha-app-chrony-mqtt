@@ -4,4 +4,6 @@
 # The web page behind Home Assistant's ingress
 # ==============================================================================
 bashio::log.info 'Starting the web page'
+LOG_LEVEL=$(bashio::config 'log_level' 'info')
+export LOG_LEVEL
 exec python3 /usr/local/lib/chrony_web.py

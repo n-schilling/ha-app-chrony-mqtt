@@ -25,15 +25,19 @@ the refresh button is pressed.
 
 from __future__ import annotations
 
+import contextlib
+import functools
 import html
 import json
 import logging
 import os
+import queue
 import signal
 import socket
 import socketserver
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import unicodedata
@@ -45,6 +49,7 @@ LOGGER = logging.getLogger("chrony_web")
 PORT = 8099              # the Supervisor's default ingress port
 # The Supervisor's ingress proxy; nothing else may talk to the page
 INGRESS_PEER = "172.30.32.2"
+APP_NAME = "Chrony NTP + MQTT"
 STORE = Path("/data/clients.json")
 STATUS = Path("/run/chrony-web.json")  # read by the key figure publisher
 PIDFILE = Path("/run/chrony/chronyd.pid")
@@ -53,7 +58,13 @@ POLL = 15                # seconds between two reads of chronyc
 REFRESH = 30             # seconds between two page updates in the browser
 SAVE_EVERY = 300         # at most one write of the client store per 5 minutes
 FORGET_AFTER = 30 * 86400
+# Clients kept at most: whoever reaches port 123 can make chrony see new
+# addresses, so the store, the page and the name lookups stay bounded
+MAX_CLIENTS = 1000
 NAME_TTL = 3600          # reverse DNS answers, also missing ones, are kept an hour
+NAMES_MAX = 2 * MAX_CLIENTS + 64  # answers kept at most
+LOOKUPS_MAX = 256        # addresses waiting for a reverse DNS answer at most
+WARN_EVERY = 3600        # one warning per hour about a full client list
 # Clients poll irregularly: active while the last request is less than three
 # intervals and an hour ago
 GRACE = 3600
@@ -67,6 +78,9 @@ BIDI = set("‪‫‬‭‮⁦⁧⁨⁩")
 NEVER = 4294967295       # chrony's placeholder for "never"
 LOCAL_CLOCK = "7F7F0101"  # chrony's own clock (serve_when_offline)
 LOCALHOST = ("127.0.0.1", "::1")
+# The look all the apps' pages share: /usr/local/share/ha-app/ha.css in the
+# image, the same place in the repository for the tests
+STYLESHEET = Path(__file__).resolve().parents[1] / "share/ha-app/ha.css"
 
 TEXT = {
     "en": {
@@ -137,104 +151,21 @@ def icon(name: str, cls: str = "") -> str:
     return f'<svg class="{cls}" viewBox="0 0 24 24" aria-hidden="true"><path d="{ICONS[name]}"/></svg>'
 
 
-# Home Assistant's defaults; the script replaces them with the theme in use
-STYLE = """
-:root { color-scheme: light dark; --primary-background-color: #fafafa; --secondary-background-color: #e5e5e5;
-  --card-background-color: #fff; --primary-text-color: #212121; --secondary-text-color: #727272;
-  --divider-color: rgba(0,0,0,.12); --primary-color: #03a9f4; --success-color: #4caf50;
-  --warning-color: #ff9800; --error-color: #db4437; --disabled-text-color: #bdbdbd;
-  --sidebar-background-color: #fff; --sidebar-text-color: #212121; --sidebar-icon-color: rgba(0,0,0,.5);
-  --app-header-border-bottom: 1px solid var(--divider-color); --ha-card-border-radius: 12px;
-  --ha-card-border-width: 1px; --ha-card-border-color: var(--divider-color); --ha-card-box-shadow: none;
-  --ha-font-family-body: Roboto, Noto, sans-serif; --header-height: 56px; }
-@media (prefers-color-scheme: dark) { :root { --primary-background-color: #111; --secondary-background-color: #282828;
-  --card-background-color: #1c1c1c; --primary-text-color: #e1e1e1; --secondary-text-color: #9b9b9b;
-  --divider-color: rgba(225,225,225,.12); --disabled-text-color: #6f6f6f; --sidebar-background-color: #1c1c1c;
-  --sidebar-text-color: #e1e1e1; --sidebar-icon-color: rgba(255,255,255,.5); } }
-* { box-sizing: border-box; }
-html, body { margin: 0; background: var(--primary-background-color); color: var(--primary-text-color);
-  font: 14px/1.6 var(--ha-font-family-body); -webkit-font-smoothing: antialiased; }
-a { color: var(--primary-color); text-decoration: none; }
-svg { width: 24px; height: 24px; fill: currentColor; flex: none; }
-header { position: sticky; top: 0; z-index: 2; display: flex; align-items: center; height: var(--header-height);
-  padding: 0 12px; background: var(--sidebar-background-color); color: var(--sidebar-text-color);
-  border-bottom: var(--app-header-border-bottom); }
-header h1 { margin: 0 0 0 12px; font-size: 20px; font-weight: 400; line-height: 32px; white-space: nowrap;
-  overflow: hidden; text-overflow: ellipsis; }
-header .actions { margin-left: auto; display: flex; align-items: center; }
-header .stamp { margin-right: 8px; font-size: 12px; color: var(--secondary-text-color); white-space: nowrap; }
-#refresh.busy svg { animation: spin 0.8s linear infinite; }
-@keyframes spin { to { transform: rotate(360deg); } }
-header .actions a { display: flex; align-items: center; justify-content: center; width: 48px; height: 48px;
-  border-radius: 50%; color: var(--sidebar-icon-color); }
-header .actions a:hover, tbody tr:hover { background: color-mix(in srgb, var(--primary-text-color) 6%, transparent); }
-main { margin: 0 auto; padding: 16px; max-width: 1040px; }
-.card { background: var(--card-background-color); border-radius: var(--ha-card-border-radius);
-  border: var(--ha-card-border-width) solid var(--ha-card-border-color); box-shadow: var(--ha-card-box-shadow);
-  margin-bottom: 16px; overflow: hidden; }
-.card h2 { margin: 0; padding: 24px 16px 16px; font-size: 24px; font-weight: 400; line-height: 32px; }
-.card .content { padding: 0 16px 16px; }
-.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 420px), 1fr)); gap: 0 16px; }
-.state { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; font-weight: 500; }
-.ok { color: var(--success-color); } .bad { color: var(--warning-color); } .muted { color: var(--secondary-text-color); }
-table { border-collapse: collapse; width: 100%; }
-th, td { text-align: left; padding: 8px 16px 8px 0; vertical-align: top; }
-td { border-top: 1px solid var(--divider-color); }
-th { font-weight: 500; font-size: 12px; white-space: nowrap; }
-table.kv th { width: 45%; font-size: 14px; font-weight: 400; color: var(--secondary-text-color);
-  border-top: 1px solid var(--divider-color); white-space: normal; }
-table.kv tr:first-child th, table.kv tr:first-child td { border-top: 0; }
-.list th:first-child, .list td:first-child { padding-left: 16px; }
-.list th { height: 56px; vertical-align: middle; border-bottom: 1px solid var(--divider-color); }
-.list th[data-sort] { cursor: pointer; user-select: none; }
-.list th[data-sort]:hover { color: var(--primary-color); }
-.list th.asc::after { content: " ▲"; font-size: 9px; } .list th.desc::after { content: " ▼"; font-size: 9px; }
-.list td { height: 52px; vertical-align: middle; font-size: 13px; }
-.list tr:first-child td { border-top: 0; }
-.n { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
-.nowrap { white-space: nowrap; }
-.sub { display: block; font-size: 12px; line-height: 16px; color: var(--secondary-text-color); }
+@functools.cache
+def stylesheet() -> str:
+    """The stylesheet all the apps share (ha.css), then this page's own rules."""
+    try:
+        return STYLESHEET.read_text() + APP_STYLE
+    except OSError as err:
+        LOGGER.warning("Cannot read the stylesheet: %s", err)
+        return APP_STYLE
+
+
+APP_STYLE = """
 .dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; background: var(--disabled-text-color); }
 .dot.on { background: var(--success-color); }
-.scroll { overflow-x: auto; }
-.toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 0 16px 16px; }
-.chip { display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 12px; border-radius: 8px;
-  border: 1px solid var(--divider-color); color: var(--primary-text-color); background: none; font: inherit;
-  font-size: 13px; font-weight: 500; cursor: pointer; }
-.chip:hover { background: color-mix(in srgb, var(--primary-text-color) 6%, transparent); }
-.chip.on { background: color-mix(in srgb, var(--primary-color) 15%, transparent); border-color: transparent; }
-.search { display: flex; align-items: center; gap: 8px; margin-left: auto; height: 36px; padding: 0 12px;
-  border-radius: 18px; background: var(--secondary-background-color); color: var(--secondary-text-color); }
-.search svg { width: 20px; height: 20px; }
-.search input { width: 180px; border: 0; outline: 0; background: none; color: var(--primary-text-color); font: inherit; }
-.note { padding: 0 16px 16px; font-size: 12px; color: var(--secondary-text-color); }
 .sub.memo { max-width: 320px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .list td.act { width: 56px; padding-right: 8px; }
-button.edit { display: flex; align-items: center; justify-content: center; width: 40px; height: 40px; padding: 0;
-  border: 0; border-radius: 50%; background: none; color: var(--secondary-text-color); cursor: pointer; }
-button.edit svg { width: 20px; height: 20px; }
-button.edit:hover, .button:hover { background: color-mix(in srgb, var(--primary-text-color) 6%, transparent); }
-dialog { width: min(100% - 32px, 440px); padding: 0; border: 0; border-radius: 28px;
-  background: var(--card-background-color); color: var(--primary-text-color); box-shadow: 0 8px 32px rgba(0,0,0,.3); }
-dialog::backdrop { background: rgba(0,0,0,.32); }
-dialog form { padding: 24px; }
-dialog h2 { margin: 0; font-size: 24px; font-weight: 400; line-height: 32px; }
-dialog .field { display: block; margin-top: 16px; }
-dialog .field > span { display: block; margin-bottom: 4px; font-size: 12px; color: var(--secondary-text-color); }
-dialog input, dialog textarea { width: 100%; padding: 12px; border: 1px solid var(--divider-color); border-radius: 8px;
-  background: none; color: var(--primary-text-color); font: inherit; resize: vertical; }
-dialog input:focus, dialog textarea:focus { outline: 2px solid var(--primary-color); outline-offset: -1px; }
-.count { display: block; text-align: right; font-size: 12px; color: var(--secondary-text-color); }
-.error { min-height: 20px; font-size: 12px; color: var(--error-color); }
-.buttons { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
-.buttons .spacer { flex: 1; }
-.button { height: 40px; padding: 0 12px; border: 0; border-radius: 20px; background: none; color: var(--primary-color);
-  font: inherit; font-weight: 500; cursor: pointer; }
-.button.danger { color: var(--error-color); }
-@media (max-width: 600px) {
-  .opt { display: none; }
-  .search { margin-left: 0; flex: 1 0 100%; } .search input { width: 100%; }
-}
 """
 
 # Takes Home Assistant's theme from the page around the ingress frame (same
@@ -244,6 +175,7 @@ THEME_VARS = ("primary-background-color", "secondary-background-color", "card-ba
               "warning-color", "error-color", "disabled-text-color", "sidebar-background-color",
               "sidebar-text-color", "sidebar-icon-color", "app-header-border-bottom", "ha-card-border-radius",
               "ha-card-border-width", "ha-card-border-color", "ha-card-box-shadow", "ha-font-family-body",
+              "text-primary-color", "info-color",
               "header-height")
 SCRIPT = """(() => {
   try {
@@ -450,11 +382,23 @@ def clean(value, limit: int) -> str:
 
 # --- Names and the client store ------------------------------------------------------
 class Names:
-    """Host names of client addresses by reverse DNS, as the router hands them out."""
+    """Host names of client addresses by reverse DNS, as the router hands them out.
+
+    A lookup without an answer can take seconds until the resolver gives up,
+    so the lookups run in a thread of their own: get() answers at once with
+    what is known, and an address asked for the first time has its name with
+    a later read. A resolver given for the tests answers at once instead.
+    """
 
     def __init__(self, resolve=None) -> None:
+        self._background = resolve is None
         self._resolve = resolve or self._lookup
         self._known: dict[str, tuple[float, str]] = {}
+        self._lock = threading.Lock()
+        self._waiting: set[str] = set()
+        self._queue: queue.SimpleQueue[str] = queue.SimpleQueue()
+        if self._background:
+            threading.Thread(target=self._work, daemon=True).start()
 
     @staticmethod
     def _lookup(ip: str) -> str:
@@ -466,11 +410,33 @@ class Names:
         return "" if name == ip else name
 
     def get(self, ip: str, now: float) -> str:
-        known = self._known.get(ip)
-        if known is None or now - known[0] > NAME_TTL:
-            known = (now, self._resolve(ip))
-            self._known[ip] = known
-        return known[1]
+        with self._lock:
+            known = self._known.get(ip)
+            if known is not None and now - known[0] <= NAME_TTL:
+                return known[1]
+            if self._background:
+                # Bounded: what does not fit is asked for with a later read
+                if ip not in self._waiting and len(self._waiting) < LOOKUPS_MAX:
+                    self._waiting.add(ip)
+                    self._queue.put(ip)
+                return known[1] if known else ""
+        name = self._resolve(ip)
+        self._keep(ip, now, name)
+        return name
+
+    def _keep(self, ip: str, now: float, name: str) -> None:
+        with self._lock:
+            self._known[ip] = (now, name)
+            self._waiting.discard(ip)
+            if len(self._known) > NAMES_MAX:
+                # The oldest answers go first
+                for old in sorted(self._known, key=lambda k: self._known[k][0])[: len(self._known) - NAMES_MAX]:
+                    del self._known[old]
+
+    def _work(self) -> None:
+        while True:
+            ip = self._queue.get()
+            self._keep(ip, time.time(), self._resolve(ip))
 
 
 class Clients:
@@ -484,13 +450,24 @@ class Clients:
         # Forgotten clients chrony still knows, with their counters then
         self.forgotten: dict[str, dict] = {}
         self._saved = 0.0
+        self._warned = 0.0
         try:
             stored = json.loads(path.read_text())
-            self.data = stored["clients"]
-            self.totals = stored.get("totals") or {}
-            self.forgotten = stored.get("forgotten") or {}
-        except (OSError, ValueError, KeyError, TypeError, AttributeError):
+            self.data = dict(stored["clients"])
+            self.totals = dict(stored.get("totals") or {})
+            self.forgotten = dict(stored.get("forgotten") or {})
+        except FileNotFoundError:
             pass
+        except (OSError, ValueError, KeyError, TypeError, AttributeError) as err:
+            # Kept aside instead of being overwritten with the next save
+            broken = path.with_name(path.name + ".broken")
+            LOGGER.warning("Cannot read %s (%s); starting with no clients, the file is kept as %s",
+                           path, err, broken.name)
+            self.data, self.totals, self.forgotten = {}, {}, {}
+            try:
+                os.replace(path, broken)
+            except OSError as move:
+                LOGGER.warning("Cannot keep %s aside: %s", path, move)
 
     @staticmethod
     def add(entry: dict, values: dict, restarted: bool) -> None:
@@ -594,20 +571,53 @@ class Clients:
                 entry["interval"] = c["interval"]
         # A client with a name or note given on the page stays until it is forgotten there
         for ip in [ip for ip, e in self.data.items()
-                   if now - e["last_seen"] > FORGET_AFTER and not (e.get("alias") or e.get("note"))]:
+                   if now - e["last_seen"] > FORGET_AFTER and not self.kept(e)]:
             del self.data[ip]
+        self._limit(now)
         if now - self._saved >= SAVE_EVERY:
             self.save(now)
 
+    @staticmethod
+    def kept(entry: dict) -> bool:
+        """A client with a name or note given on the page stays until it is forgotten there."""
+        return bool(entry.get("alias") or entry.get("note"))
+
+    def _limit(self, now: float) -> None:
+        """At most MAX_CLIENTS: beyond that the clients that asked only once
+        go first, then those away longest; named ones stay."""
+        excess = len(self.data) - MAX_CLIENTS
+        if excess <= 0:
+            return
+        drop = sorted((ip for ip, e in self.data.items() if not self.kept(e)),
+                      key=lambda ip: (self.sum(self.data[ip], "requests") > 1 if "requests" in self.data[ip] else False,
+                                      self.data[ip]["last_seen"]))[:excess]
+        for ip in drop:
+            del self.data[ip]
+        if now - self._warned >= WARN_EVERY:
+            self._warned = now
+            LOGGER.warning("More than %d clients; dropped %d that asked least recently. Limit who may "
+                           "take time with the option allowed_networks", MAX_CLIENTS, len(drop))
+
     def save(self, now: float) -> None:
-        tmp = self.path.with_suffix(".tmp")
+        """Writes the store whole or not at all; the caller holds the state's lock."""
+        tmp = None
         try:
-            tmp.write_text(json.dumps({"clients": self.data, "totals": self.totals, "forgotten": self.forgotten},
-                                      sort_keys=True))
+            text = json.dumps({"clients": self.data, "totals": self.totals, "forgotten": self.forgotten},
+                              sort_keys=True)
+            fd, tmp = tempfile.mkstemp(dir=self.path.parent, prefix=self.path.name + ".", suffix=".tmp")
+            with os.fdopen(fd, "w") as out:
+                out.write(text)
+                out.flush()
+                os.fsync(out.fileno())
             os.replace(tmp, self.path)
+            tmp = None
             self._saved = now
-        except OSError as err:
+        except (OSError, RuntimeError, TypeError, ValueError) as err:
             LOGGER.warning("Cannot save %s: %s", self.path, err)
+        finally:
+            if tmp is not None:
+                with contextlib.suppress(OSError):
+                    os.unlink(tmp)
 
 
 class State:
@@ -625,6 +635,8 @@ class State:
         self.at = 0.0
         # One read of chronyc at a time: the background loop or a refresh button
         self._reading = threading.Lock()
+        # What failed last, so the log tells once per outage
+        self._failing: set[str] = set()
 
     def refresh(self) -> None:
         with self._reading:
@@ -635,9 +647,11 @@ class State:
         try:
             chrony = self._read()
         except (OSError, subprocess.SubprocessError, ValueError, IndexError) as err:
-            LOGGER.debug("chronyc failed: %s", err)
+            self._failed("chronyc", "chronyc does not answer (%s), retrying every %d s", err, POLL)
             chrony = None
-        # Lookups can take seconds; the page keeps showing the last read meanwhile
+        else:
+            self._recovered("chronyc", "chronyc answers again")
+        # Names known so far; new ones are looked up in the background
         names = {c["ip"]: self.names.get(c["ip"], now) for c in (chrony or {}).get("clients", [])
                  if c["last"] is not None}
         if chrony is not None:
@@ -664,7 +678,20 @@ class State:
             tmp.write_text(json.dumps(status))
             os.replace(tmp, self._status)
         except OSError as err:
-            LOGGER.debug("Cannot write %s: %s", self._status, err)
+            # Without it the sensor NTP requests missing is unknown
+            self._failed("status", "Cannot write %s: %s", self._status, err)
+        else:
+            self._recovered("status", "%s written again", self._status)
+
+    def _failed(self, what: str, message: str, *args) -> None:
+        if what not in self._failing:
+            self._failing.add(what)
+            LOGGER.warning(message, *args)
+
+    def _recovered(self, what: str, message: str, *args) -> None:
+        if what in self._failing:
+            self._failing.discard(what)
+            LOGGER.info(message, *args)
 
     def change(self, body: dict) -> int:
         """A change sent by the page; the HTTP status of the answer."""
@@ -771,8 +798,10 @@ def status_card(f: Format, chrony: dict, clients: Clients, now: float) -> str:
     if not sync_problem(tr):
         state = f'<div class="state ok">{icon("ok")}{esc(t["synced"].format(reference))}</div>'
     else:
+        # Before its first sync chrony reports stratum 0
+        unsynced = tr["stratum"] >= 16 or tr["stratum"] == 0 or tr["leap"] == "Not synchronised"
         reason = (t["local"] if tr["refid"] == LOCAL_CLOCK else
-                  t["unsynced"] if tr["stratum"] >= 16 else t["leap"].format(tr["leap"]))
+                  t["unsynced"] if unsynced else t["leap"].format(tr["leap"]))
         state = f'<div class="state bad">{icon("alert")}{esc(reason)}</div>'
     if clients.requests_missing(now):
         last = max(e["last_seen"] for e in clients.data.values())
@@ -852,13 +881,12 @@ def clients_card(f: Format, state: State, now: float) -> str:
         # chrony's interval while it knows the client, else the last one it knew
         exponent = c["interval"] if c and c["interval"] is not None else entry.get("interval")
         interval = esc(f.log2(exponent))
-        sort_ip = ".".join(p.zfill(3) for p in ip.split(".")) if "." in ip else ip
         sub = f'<span class="sub">{esc(ip)}</span>' if shown != ip else ""
         sub += f'<span class="sub memo" title="{esc(note)}">{esc(note)}</span>' if note else ""
         dot = esc(t["active" if is_active else "inactive"] + " · " + t["expected"].format(f.log2(exponent))
                   if exponent is not None else t["active" if is_active else "inactive"])
         rows.append(
-            f'<tr data-name="{esc(shown.lower())}" data-ip="{esc(sort_ip)}" data-text="{esc(text)}"'
+            f'<tr data-name="{esc(shown.lower())}" data-text="{esc(text)}"'
             f' data-addr="{esc(ip)}" data-alias="{esc(alias)}" data-note="{esc(note)}" data-dns="{esc(short_name(name))}"'
             f' data-state="{"active" if is_active else "inactive"}"'
             f' data-requests="{Clients.sum(entry, "requests") if counted else ""}"'
@@ -869,7 +897,8 @@ def clients_card(f: Format, state: State, now: float) -> str:
             f'<td title="{esc(name or ip)}">{esc(shown)}{sub}</td>'
             f'<td class="n">{requests}</td><td class="n opt">{dropped}</td><td class="n opt">{interval}</td>'
             f'<td class="n">{last}</td><td class="n opt">{esc(f.when(entry["first_seen"]))}</td>'
-            f'<td class="act"><button class="edit" title="{esc(t["edit"])}">{icon("pencil")}</button></td></tr>')
+            f'<td class="act"><button class="icon-button small edit" title="{esc(t["edit"])}"'
+            f' aria-label="{esc(t["edit"])}">{icon("pencil")}</button></td></tr>')
     total = len(rows)
     empty = "" if rows else f'<tr><td colspan="8" class="muted">{esc(t["no_clients"])}</td></tr>'
     rows.append(f'<tr class="none" hidden><td colspan="8" class="muted">{esc(t["no_match"])}</td></tr>')
@@ -898,14 +927,14 @@ def edit_dialog(t: dict) -> str:
             f'<input id="edit-name" maxlength="{NAME_MAX}" autocomplete="off"></label>'
             f'<label class="field"><span>{esc(t["note"])}</span>'
             f'<textarea id="edit-note" maxlength="{NOTE_MAX}" rows="3"></textarea>'
-            f'<span class="count" id="edit-count"></span></label><div class="error" id="edit-error"></div>'
+            f'<span class="count" id="edit-count"></span></label><div class="field-error" id="edit-error"></div>'
             f'<div class="buttons"><button type="button" class="button danger" id="edit-forget"'
             f' data-confirm="{esc(t["forget_confirm"])}">{esc(t["forget"])}</button><span class="spacer"></span>'
             f'<button type="button" class="button" id="edit-cancel">{esc(t["cancel"])}</button>'
-            f'<button type="submit" class="button">{esc(t["save"])}</button></div></form></dialog>')
+            f'<button type="submit" class="button filled">{esc(t["save"])}</button></div></form></dialog>')
 
 
-def render(state: State, lang: str, slug: str | None, now: float | None = None) -> str:
+def render(state: State, lang: str, slug: str | None, now: float | None = None, version: str | None = None) -> str:
     f = Format(lang)
     t = f.t
     now = state._clock() if now is None else now
@@ -920,20 +949,30 @@ def render(state: State, lang: str, slug: str | None, now: float | None = None) 
     # The settings are Home Assistant's own page, outside the ingress frame
     stamp = time.strftime("%H:%M:%S", time.localtime(state.at)) if state.at else ""
     actions = f'<span class="stamp opt">{esc(t["as_of"].format(stamp))}</span>' if stamp else ""
-    actions += f'<a href="" id="refresh" title="{esc(t["refresh"])}" role="button">{icon("refresh")}</a>'
-    actions += (f'<a href="/config/app/{esc(slug)}/config" target="_top" title="{esc(t["settings"])}">'
-                f'{icon("settings")}</a>' if slug else "")
+    actions += (f'<button class="icon-button" id="refresh" title="{esc(t["refresh"])}"'
+                f' aria-label="{esc(t["refresh"])}">{icon("refresh")}</button>')
+    actions += (f'<a class="icon-button" href="/config/app/{esc(slug)}/config" target="_top"'
+                f' title="{esc(t["settings"])}" aria-label="{esc(t["settings"])}">{icon("settings")}</a>'
+                if slug else "")
+    # As on Home Assistant's own pages: name and version at the very bottom
+    about = f"{APP_NAME} {version}" if version else APP_NAME
     return (f'<!doctype html><html lang="{lang}"><head><meta charset="utf-8">'
             '<meta name="viewport" content="width=device-width, initial-scale=1">'
-            f"<title>{esc(t['title'])}</title><style>{STYLE}</style><script>{SCRIPT}</script></head><body>"
+            f"<title>{esc(t['title'])}</title><style>{stylesheet()}</style><script>{SCRIPT}</script></head><body>"
             f'<header><h1>{esc(t["title"])}</h1><div class="actions" id="actions">{actions}</div></header>'
             # The dialog stays outside main, which the script swaps for a fresh copy
-            f"<main>{body}</main>{edit_dialog(t)}</body></html>")
+            f'<main>{body}</main><footer class="version">{esc(about)}</footer>{edit_dialog(t)}</body></html>')
 
 
 # --- The server ------------------------------------------------------------------------------
 class Server(ThreadingHTTPServer):
     daemon_threads = True
+    # Peers that may connect; any other connection is closed before a thread
+    # starts for it. Empty lets everybody in (the tests).
+    allowed: frozenset[str] = frozenset()
+
+    def verify_request(self, request, client_address) -> bool:
+        return not self.allowed or client_address[0] in self.allowed
 
     def server_bind(self) -> None:
         # HTTPServer looks up its own name here, which can wait for DNS
@@ -941,9 +980,11 @@ class Server(ThreadingHTTPServer):
         self.server_name, self.server_port = "chrony-web", self.server_address[1]
 
 
-def handler(state: State, slug: str | None, allowed: set[str]):
+def handler(state: State, slug: str | None, allowed: set[str], version: str | None = None):
     class Handler(BaseHTTPRequestHandler):
         server_version = "chrony-web"
+        # A connection that sends nothing frees its thread after this many seconds
+        timeout = 10
 
         def _refused(self) -> bool:
             if allowed and self.client_address[0] not in allowed:
@@ -960,7 +1001,7 @@ def handler(state: State, slug: str | None, allowed: set[str]):
             # The refresh button asks for a read of chrony at once
             if "refresh=1" in self.path.partition("?")[2].split("&"):
                 state.refresh()
-            page = render(state, lang_of(self.headers.get("Accept-Language")), slug)
+            page = render(state, lang_of(self.headers.get("Accept-Language")), slug, version=version)
             self._send(200, "text/html; charset=utf-8", page.encode())
 
         def do_POST(self) -> None:  # noqa: N802
@@ -994,21 +1035,32 @@ def handler(state: State, slug: str | None, allowed: set[str]):
     return Handler
 
 
+def log_level(name: str | None) -> int:
+    """The app's option log_level as a level of Python's logging."""
+    return {"debug": logging.DEBUG, "warning": logging.WARNING, "error": logging.ERROR}.get(
+        (name or "").lower(), logging.INFO)
+
+
 def main() -> None:
-    logging.basicConfig(level=logging.DEBUG if os.environ.get("LOG_LEVEL") == "debug" else logging.INFO,
+    logging.basicConfig(level=log_level(os.environ.get("LOG_LEVEL")),
                         format="[%(asctime)s] %(levelname)s: %(message)s", datefmt="%H:%M:%S", stream=sys.stdout)
-    # The app's slug, e.g. 8af13b69_chrony_ntp; the Supervisor names the container's host after it
+    # The app's slug, e.g. a1b2c3d4_chrony_ntp; the Supervisor names the container's host after it
     slug = os.environ.get("HOSTNAME", "").replace("-", "_") or None
+    # The version from config.yaml, passed by the Supervisor when it builds the image
+    version = os.environ.get("APP_VERSION") or None
     state = State(Clients(STORE), status=STATUS)
     threading.Thread(target=state.run, daemon=True).start()
     # s6 stops the service with TERM; leave through finally to save the store
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
-    server = Server(("0.0.0.0", PORT), handler(state, slug, {INGRESS_PEER}))
+    server = Server(("0.0.0.0", PORT), handler(state, slug, {INGRESS_PEER}, version))
+    server.allowed = frozenset({INGRESS_PEER})
     LOGGER.info("Web page on port %d (ingress)", PORT)
     try:
         server.serve_forever()
     finally:
-        state.clients.save(time.time())
+        # The background read may be changing the clients right now
+        with state.lock:
+            state.clients.save(time.time())
 
 
 if __name__ == "__main__":

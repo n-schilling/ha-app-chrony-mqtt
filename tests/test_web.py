@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 import urllib.error
 import urllib.request
@@ -102,9 +103,57 @@ class Store(Fixture):
         self.state(table={"192.0.2.6": "plug.lan"})
         self.assertEqual(self.state(now=NOW + 2 * w.NAME_TTL).clients.data["192.0.2.6"]["name"], "plug.lan")
 
-    def test_broken_store_starts_empty(self) -> None:
+    def test_broken_store_is_kept_aside(self) -> None:
         self.path.write_text("{")
-        self.assertEqual(w.Clients(self.path).data, {})
+        with self.assertLogs("chrony_web", "WARNING") as log:
+            clients = w.Clients(self.path)
+        self.assertEqual(clients.data, {})
+        self.assertIn("clients.json.broken", log.output[0])
+        self.assertEqual(self.path.with_name("clients.json.broken").read_text(), "{")
+        self.assertFalse(self.path.exists())
+
+    def test_store_of_the_wrong_type_is_kept_aside(self) -> None:
+        self.path.write_text("[]")
+        with self.assertLogs("chrony_web", "WARNING"):
+            self.assertEqual(w.Clients(self.path).data, {})
+        self.assertTrue(self.path.with_name("clients.json.broken").exists())
+
+    def test_no_store_yet_is_no_warning(self) -> None:
+        with self.assertNoLogs("chrony_web", "WARNING"):
+            self.assertEqual(w.Clients(self.path).data, {})
+
+    def test_save_leaves_no_temporary_file(self) -> None:
+        clients = w.Clients(self.path)
+        clients.save(NOW)
+        self.assertEqual(sorted(p.name for p in self.path.parent.iterdir()), ["clients.json"])
+
+    def test_save_that_fails_keeps_the_old_store(self) -> None:
+        clients = w.Clients(self.path)
+        clients.data["192.0.2.6"] = {"first_seen": 1, "last_seen": 1, "name": ""}
+        clients.save(NOW)
+        clients.data["192.0.2.7"] = {"bad": object()}
+        with self.assertLogs("chrony_web", "WARNING"):
+            clients.save(NOW + 1)
+        self.assertEqual(sorted(json.loads(self.path.read_text())["clients"]), ["192.0.2.6"])
+        self.assertEqual(sorted(p.name for p in self.path.parent.iterdir()), ["clients.json"])
+
+    def test_at_most_max_clients(self) -> None:
+        clients = w.Clients(self.path)
+        clients.data["192.0.2.1"] = {"first_seen": 0, "last_seen": 0, "name": "", "alias": "Old clock"}
+        clients.update([{"ip": "192.0.2.2", "requests": 50, "dropped": 0, "interval": 10, "last": 9000}], {}, NOW)
+        flood = [{"ip": f"2001:db8::{n:x}", "requests": 1, "dropped": 0, "interval": None, "last": 1}
+                 for n in range(w.MAX_CLIENTS + 500)]
+        with self.assertLogs("chrony_web", "WARNING") as log:
+            clients.update(flood, {}, NOW + 60)
+        self.assertEqual(len(clients.data), w.MAX_CLIENTS)
+        # Named and regular clients stay; addresses that asked once go first
+        self.assertIn("192.0.2.1", clients.data)
+        self.assertIn("192.0.2.2", clients.data)
+        self.assertIn("More than 1000 clients", log.output[0])
+        # One warning per hour
+        with self.assertNoLogs("chrony_web", "WARNING"):
+            clients.update(flood[:10] + [{"ip": "2001:db8:1::1", "requests": 1, "dropped": 0, "interval": None,
+                                          "last": 1}], {}, NOW + 120)
 
     def test_saves_at_most_every_five_minutes(self) -> None:
         clients = w.Clients(self.path)
@@ -114,6 +163,46 @@ class Store(Fixture):
         self.assertFalse(self.path.exists())
         clients.update([], {}, NOW + w.SAVE_EVERY)
         self.assertTrue(self.path.exists())
+
+
+class Names(unittest.TestCase):
+    def test_lookups_in_the_background(self) -> None:
+        release = threading.Event()
+        asked = []
+
+        def slow(ip: str) -> str:
+            asked.append(ip)
+            release.wait(5)
+            return "clock.lan"
+
+        found = w.Names()
+        found._resolve = slow
+        # Answers at once, the name comes with a later read
+        self.assertEqual(found.get("192.0.2.6", NOW), "")
+        self.assertEqual(found.get("192.0.2.6", NOW), "")
+        release.set()
+        for _ in range(50):
+            if found.get("192.0.2.6", time.time()):
+                break
+            threading.Event().wait(0.05)
+        self.assertEqual(found.get("192.0.2.6", time.time()), "clock.lan")
+        self.assertEqual(asked, ["192.0.2.6"])
+
+    def test_waiting_lookups_are_bounded(self) -> None:
+        found = w.Names()
+        block = threading.Event()
+        found._resolve = lambda ip: block.wait(5) and ""
+        for n in range(w.LOOKUPS_MAX + 100):
+            found.get(f"2001:db8::{n:x}", NOW)
+        self.assertEqual(len(found._waiting), w.LOOKUPS_MAX)
+        block.set()
+
+    def test_answers_kept_are_bounded(self) -> None:
+        found = names()
+        for n in range(w.NAMES_MAX + 10):
+            found.get(f"2001:db8::{n:x}", NOW + n)
+        self.assertEqual(len(found._known), w.NAMES_MAX)
+        self.assertNotIn("2001:db8::0", found._known)
 
 
 class Totals(Fixture):
@@ -417,6 +506,48 @@ class Page(Fixture):
         self.assertNotIn("<img", page)
         self.assertIn("&lt;img", page)
 
+    def test_never_synchronized(self) -> None:
+        os.environ["TRACKING"] = str(TESTS / "fixtures/tracking-stratum0.csv")
+        try:
+            page = w.render(self.state(), "de", None)
+        finally:
+            os.environ["TRACKING"] = str(TESTS / "fixtures/tracking.csv")
+        self.assertIn("Nicht synchronisiert", page)
+        self.assertNotIn("Schaltsekunden", page)
+
+    def test_version_at_the_bottom(self) -> None:
+        page = w.render(self.state(), "en", None, version="2.1.0")
+        self.assertIn('<footer class="version">Chrony NTP + MQTT 2.1.0</footer>', page)
+        self.assertIn('<footer class="version">Chrony NTP + MQTT</footer>', w.render(self.state(), "en", None))
+
+    def test_shared_stylesheet(self) -> None:
+        page = w.render(self.state(), "en", None)
+        self.assertIn("footer.version", page)
+        self.assertIn("--primary-color: #009ac7", page)
+        self.assertIn(".dot.on", page)
+
+    def test_log_level_from_the_option(self) -> None:
+        import logging
+        self.assertEqual([w.log_level(n) for n in ("debug", "info", "warning", "error", None)],
+                         [logging.DEBUG, logging.INFO, logging.WARNING, logging.ERROR, logging.INFO])
+
+    def test_chronyc_failure_logged_once(self) -> None:
+        calls = []
+
+        def flaky() -> dict:
+            calls.append(1)
+            if len(calls) <= 2:
+                raise subprocess.CalledProcessError(1, "chronyc")
+            return w.read_chrony()
+
+        state = w.State(w.Clients(self.path), names(), read=flaky, clock=lambda: NOW)
+        with self.assertLogs("chrony_web", "INFO") as log:
+            state.refresh()
+            state.refresh()
+            state.refresh()
+        self.assertEqual([r.levelname for r in log.records], ["WARNING", "INFO"])
+        self.assertIn("chronyc does not answer", log.output[0])
+
     def test_sync_problem(self) -> None:
         os.environ["TRACKING"] = str(TESTS / "fixtures/tracking-local.csv")
         try:
@@ -440,7 +571,7 @@ class Page(Fixture):
 
 class Server(Fixture):
     def serve(self, allowed: set[str]) -> str:
-        server = w.Server(("127.0.0.1", 0), w.handler(self.state(), None, allowed))
+        server = w.Server(("127.0.0.1", 0), w.handler(self.state(), None, allowed, "2.1.0"))
         threading.Thread(target=server.serve_forever, daemon=True).start()
         self.addCleanup(server.server_close)
         self.addCleanup(server.shutdown)
@@ -456,6 +587,18 @@ class Server(Fixture):
 
     def test_only_the_ingress_proxy(self) -> None:
         self.assertEqual(self.get(self.serve({w.INGRESS_PEER}) + "/"), (403, "only through Home Assistant"))
+
+    def test_other_peers_closed_before_a_thread_starts(self) -> None:
+        server = w.Server(("127.0.0.1", 0), w.handler(self.state(), None, set()))
+        server.allowed = frozenset({w.INGRESS_PEER})
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        with self.assertRaises((urllib.error.URLError, ConnectionError)):
+            urllib.request.urlopen(f"http://127.0.0.1:{server.server_address[1]}/", timeout=5)
+
+    def test_idle_connections_time_out(self) -> None:
+        self.assertEqual(w.handler(self.state(), None, set()).timeout, 10)
 
     def test_page_in_the_browsers_language(self) -> None:
         base = self.serve(set())
@@ -509,9 +652,9 @@ class Server(Fixture):
 
     def test_page_has_the_dialog_outside_main(self) -> None:
         page = self.get(self.serve(set()) + "/")[1]
-        self.assertIn('</main><dialog id="edit"', page)
+        self.assertIn('</main><footer class="version">Chrony NTP + MQTT 2.1.0</footer><dialog id="edit"', page)
         self.assertIn(f'maxlength="{w.NOTE_MAX}"', page)
-        self.assertIn('class="edit"', page)
+        self.assertIn('class="icon-button small edit"', page)
 
     def test_store_written_as_json(self) -> None:
         self.state()
