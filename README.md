@@ -60,6 +60,18 @@ The [documentation](chrony_ntp/DOCS.md) covers the options, the page, the sensor
 
 2. Install **Chrony NTP + MQTT**, review the options and start it.
 
+## Development
+
+The web page is a single Python module on the standard library, [`chrony_web.py`](chrony_ntp/rootfs/usr/local/lib/chrony_web.py); the sensor publisher and the setup of chrony are s6 services in [`chrony_ntp/rootfs/etc/s6-overlay/s6-rc.d`](chrony_ntp/rootfs/etc/s6-overlay/s6-rc.d). The page's look comes from the stylesheet shared by these apps, [`ha.css`](chrony_ntp/rootfs/usr/local/share/ha-app/ha.css), which stays identical in every app. The image installs only Alpine packages, no Python packages.
+
+```bash
+scripts/check.sh
+```
+
+`scripts/check.sh` runs what CI runs: the changelog check, shellcheck, ruff, the image build, and the tests inside the built image, including those against a Mosquitto broker in Docker (`--no-broker` skips them). It needs Docker; shellcheck and ruff come from `PATH`, else from Docker and [uv](https://docs.astral.sh/uv/). The screenshots come from `scripts/screenshots.py` (see its header for the setup): it serves the page with made-up data on 127.0.0.1 and draws it with headless Chromium.
+
+Releases: work on `dev`, raise `version` in `chrony_ntp/config.yaml` and add its section to the changelog; once `main` is green, the release workflow tags the version and publishes the release with that section.
+
 ## Support
 
 Questions, bugs and ideas: [open an issue](https://github.com/n-schilling/ha-app-chrony-mqtt/issues/new/choose) in this repository. Security problems: see [SECURITY.md](SECURITY.md).

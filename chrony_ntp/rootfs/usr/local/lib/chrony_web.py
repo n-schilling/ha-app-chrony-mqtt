@@ -13,8 +13,8 @@ given to a client on the page are kept with it, and such a client stays until
 it is forgotten on the page.
 
 Every read of chrony also writes STATUS, from which the key figure publisher
-takes the NTP requests missing sensor: no known client asked within its usual
-time, so the server or the way to it is broken.
+takes the NTP requests missing sensor: no client of the last RECENT asked
+within its usual time, so the server or the way to it is broken.
 
 The page is rendered on the server and needs nothing beyond Python's standard
 library. Its only script takes Home Assistant's theme from the page around
@@ -58,6 +58,9 @@ POLL = 15                # seconds between two reads of chronyc
 REFRESH = 30             # seconds between two page updates in the browser
 SAVE_EVERY = 300         # at most one write of the client store per 5 minutes
 FORGET_AFTER = 30 * 86400
+# Only clients that asked within this time count for NTP requests missing, so a
+# device taken away, also one with a name, stops holding it on after a week
+RECENT = 7 * 86400
 # Clients kept at most: whoever reaches port 123 can make chrony see new
 # addresses, so the store, the page and the name lookups stay bounded
 MAX_CLIENTS = 1000
@@ -489,8 +492,9 @@ class Clients:
         return now - entry["last_seen"] < expected(entry.get("interval"))
 
     def requests_missing(self, now: float) -> bool:
-        """Clients are known, but none asked within its usual time."""
-        return bool(self.data) and not any(self.active(e, now) for e in self.data.values())
+        """Clients asked in the last RECENT, but none within its usual time."""
+        recent = [e for e in self.data.values() if now - e["last_seen"] < RECENT]
+        return bool(recent) and not any(self.active(e, now) for e in recent)
 
     def edit(self, ip: str, alias: str, note: str, now: float) -> bool:
         entry = self.data.get(ip)

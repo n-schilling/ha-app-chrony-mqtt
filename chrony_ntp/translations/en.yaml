@@ -13,7 +13,7 @@ configuration:
     description: Servers used in server mode.
   allowed_networks:
     name: Allowed networks
-    description: Networks that may take time from this server, e.g. 192.168.1.0/24; empty serves every client.
+    description: Networks that may take time from this server, e.g. 192.168.1.0/24; empty serves the private networks, 0.0.0.0/0 and ::/0 every client.
   serve_when_offline:
     name: Serve when offline
     description: Keep serving the host clock at stratum 10 when no upstream server is reachable.

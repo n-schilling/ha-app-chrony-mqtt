@@ -71,7 +71,12 @@ expect 'pool mode without a pool stops the app' "$(grep -c 'mode is pool, but nt
 echo '# Allowed networks and offline fallback'
 POOL='"mode":"pool","ntp_pool":"pool.ntp.org","ntp_server":[]'
 init_config "{${POOL}}"
-expect 'no allowed networks: every client' "$(grep -E '^(allow|local)' "${CONF}")" 'allow all'
+expect 'no allowed networks: the private ones' "$(grep -E '^(allow|local)' "${CONF}" | tr '\n' '|')" \
+    'allow 10.0.0.0/8|allow 172.16.0.0/12|allow 192.168.0.0/16|allow fc00::/7|allow fe80::/10|'
+expect 'chronyd accepts the private networks' "$(chronyd -p -f "${CONF}" > /dev/null 2>&1; echo $?)" 0
+init_config "{${POOL},\"allowed_networks\":[\"0.0.0.0/0\",\"::/0\"]}"
+expect 'every client on request' "$(grep '^allow' "${CONF}" | tr '\n' '|')" 'allow 0.0.0.0/0|allow ::/0|'
+expect 'chronyd accepts every network' "$(chronyd -p -f "${CONF}" > /dev/null 2>&1; echo $?)" 0
 init_config "{${POOL},\"allowed_networks\":[\"10.0.0.0/16\",\"fd00::/8\"],\"serve_when_offline\":true}"
 expect 'allowed networks only' "$(grep '^allow' "${CONF}" | tr '\n' '|')" 'allow 10.0.0.0/16|allow fd00::/8|'
 expect 'offline fallback serves the local clock' "$(grep '^local' "${CONF}")" 'local stratum 10'

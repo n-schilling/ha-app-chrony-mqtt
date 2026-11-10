@@ -17,7 +17,7 @@ Runs chrony as an NTP server on port 123/udp, so devices in your network can tak
 | `ntp_pool` | `pool.ntp.org` | Pool used in pool mode |
 | `ntp_server` | `0–2.pool.ntp.org` | Servers used in server mode |
 | `set_system_clock` | `true` | Let chrony adjust the host clock; off makes chrony only serve time |
-| `allowed_networks` | | Networks that may take time from this server, e.g. `192.168.1.0/24` or `fd00::/8`. Empty serves every client that reaches port 123 of the host, so keep the port closed to the internet or list your networks here |
+| `allowed_networks` | | Networks that may take time from this server, e.g. `192.168.1.0/24` or `fd00::/8`. Empty serves the private networks (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `fc00::/7`, `fe80::/10`); `0.0.0.0/0` and `::/0` serve every client that reaches port 123 of the host |
 | `serve_when_offline` | `false` | Keep serving the host clock at stratum 10 when no upstream server is reachable, so clients stay in step with each other; the *Sync problem* sensor turns on meanwhile |
 | `mqtt_interval` | `300` | Seconds between two sensor updates |
 | `discovery_prefix` | `homeassistant` | MQTT discovery prefix |
@@ -81,7 +81,7 @@ Device **Chrony NTP Server**, with the two things worth an automation; everythin
 | Sensor | Meaning |
 |---|---|
 | Sync problem | On while unsynchronized (stratum 0 or 16), serving its own clock (`serve_when_offline`) or a leap status other than normal |
-| NTP requests missing | On while no known client is active, i.e. none asked within its usual time: the server or the way to it is broken, e.g. a router change broke the NTP redirect. Off while there are no clients yet |
+| NTP requests missing | On while no client of the last 7 days is active, i.e. none asked within its usual time: the server or the way to it is broken, e.g. a router change broke the NTP redirect. Off while there are no clients yet; a client that has not asked for 7 days no longer counts, so the sensor turns off a week after the last request |
 
 Both turn unavailable when the app stops or its connection to the broker breaks; after a reconnect the app announces the device again and publishes the states at once. *NTP requests missing* is unknown while the web page does not run. The link on the device's page opens the app's page in Home Assistant.
 
@@ -119,9 +119,9 @@ The entity IDs follow the device name; adjust them if you renamed the device.
 ## Troubleshooting
 
 - **The app does not start, port 123 is in use.** Another app or service on the host serves NTP. Stop it, or map the app's port to another one on the *Configuration* tab and point your devices there.
-- **No clients on the page.** Devices only show up after they asked for the time. Check that they use the Home Assistant host as NTP server, that a redirect on the router points to it, and that `allowed_networks` includes their network.
+- **No clients on the page.** Devices only show up after they asked for the time. Check that they use the Home Assistant host as NTP server, that a redirect on the router points to it, and that their network is a private one or listed in `allowed_networks`.
 - **Sync problem stays on.** The host cannot reach the upstream servers. Check outgoing UDP port 123 on your router and the servers in `ntp_pool` / `ntp_server`; the log shows chrony's view.
-- **NTP requests missing stays on although the server works.** A device you took away is still in the list and was the only client, or all others are switched off. Forget it on the page (pencil → Forget).
+- **NTP requests missing is on although the server works.** A device you took away was the only client of the last 7 days, or all others are switched off. Forget it on the page (pencil → Forget), or the sensor turns off by itself a week after its last request.
 - **The entities are unavailable.** The app is stopped, or it lost its connection to the MQTT broker; the log tells which.
 - **The log says the client list could not be read.** The file was damaged, e.g. by a power cut; the app starts with an empty list and keeps the old file as `clients.json.broken` in its data folder.
 - **More detail.** Set `log_level` to `debug`.

@@ -345,6 +345,17 @@ class Activity(Fixture):
         self.assertTrue(state.clients.requests_missing(NOW + 2 * 3600))
         self.assertFalse(w.Clients(Path(self.tmp.name) / "none.json").requests_missing(NOW))
 
+    def test_requests_missing_counts_the_clients_of_the_last_week(self) -> None:
+        state = self.state(read=asking({"192.0.2.6": (8, 60, 5)}))
+        state.clients.edit("192.0.2.6", "Taken away", "", NOW)
+        # A named device taken away holds the sensor on for a week, not for ever
+        self.assertTrue(state.clients.requests_missing(NOW - 60 + w.RECENT - 1))
+        self.assertFalse(state.clients.requests_missing(NOW - 60 + w.RECENT))
+        self.assertIn("192.0.2.6", state.clients.data)
+        # One client of the last week that stopped asking is enough
+        state.clients.data["192.0.2.7"] = {"last_seen": NOW - 60 + w.RECENT - 6 * 3600, "interval": 8}
+        self.assertTrue(state.clients.requests_missing(NOW - 60 + w.RECENT))
+
     def test_status_for_the_publisher(self) -> None:
         status = Path(self.tmp.name) / "status.json"
         state = w.State(w.Clients(self.path), names(), read=asking({"192.0.2.6": (8, 60, 5)}),

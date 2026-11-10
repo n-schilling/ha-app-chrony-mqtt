@@ -14,6 +14,8 @@ All notable changes to this app are documented here. The format follows [Keep a 
 
 ### Changed
 
+- `allowed_networks` left empty now serves the private networks (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `fc00::/7`, `fe80::/10`) instead of every client; list `0.0.0.0/0` and `::/0` to serve everyone
+- **NTP requests missing** only counts clients that asked in the last 7 days, so a device taken away, also one with a name, no longer holds it on for good
 - The web page uses the stylesheet all of these apps share, with Home Assistant 2026.11's colours, buttons and text fields
 - The page keeps at most 1000 clients; beyond that, addresses that asked only once go first, then those away longest. Clients with a name or note stay
 - Reverse DNS lookups run in the background, so a slow resolver no longer holds up reading chrony or the refresh button
