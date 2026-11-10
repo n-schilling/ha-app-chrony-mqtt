@@ -1,25 +1,50 @@
 # Chrony NTP + MQTT app for Home Assistant
 
-[![Release](https://img.shields.io/github/v/release/n-schilling/ha-app-chrony-mqtt)](https://github.com/n-schilling/ha-app-chrony-mqtt/releases)
-[![CI](https://github.com/n-schilling/ha-app-chrony-mqtt/actions/workflows/ci.yaml/badge.svg?branch=main)](https://github.com/n-schilling/ha-app-chrony-mqtt/actions/workflows/ci.yaml)
 [![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 ![Home Assistant app](https://img.shields.io/badge/Home%20Assistant-app-41BDF5?logo=homeassistant&logoColor=white)
 ![Supports aarch64](https://img.shields.io/badge/aarch64-yes-green.svg)
 ![Supports amd64](https://img.shields.io/badge/amd64-yes-green.svg)
 
-![Chrony NTP + MQTT](chrony_ntp/logo.png)
+A Home Assistant app that runs [chrony](https://chrony-project.org/) as a local NTP server for your network. Its page in Home Assistant shows the sync status, the upstream sources and every client with the time of its last request, a name and a note. Two problem sensors through MQTT discovery tell Home Assistant when the server loses its upstream source or no client asks any more.
 
-A Home Assistant app that runs [chrony](https://chrony-project.org/) as a local NTP server for your network with a page of its own in Home Assistant that shows the sync status, the upstream sources and every client with the time of its last request, a name and a note. Two problem sensors through MQTT discovery tell Home Assistant when the server loses its upstream source or no client asks any more.
+Requires Home Assistant 2026.11 or later.
 
-## The web page
+## Screenshots
 
-The page (**Open web UI** on the app's page, or in the sidebar with **Show in sidebar**) looks like Home Assistant's settings and takes over the theme in use. The screenshots show made-up demo data.
+The page looks like Home Assistant's own settings and follows the theme in use. The data on these pictures is made up.
 
-| Status and upstream sources | Clients |
-|---|---|
-| ![Sync status, request totals, upstream sources and accuracy](docs/screenshots/overview.png) | ![Clients with requests, interval and last request, filtered by state](docs/screenshots/clients.png) |
-| **Name and note of a client** | |
-| ![Dialog to name a client, add a note or forget it](docs/screenshots/edit.png) | |
+<img src="docs/screenshots/overview.png" alt="Status with sync state and request totals, upstream sources and accuracy" width="700">
+
+<img src="docs/screenshots/clients.png" alt="Client list filtered to active clients, with requests, interval and last request" width="700">
+
+<img src="docs/screenshots/edit.png" alt="Dialog to name a client, add a note or forget it" width="700">
+
+<img src="docs/screenshots/mobile-dark.png" alt="The page on a phone in dark mode, in German" width="260">
+
+## Overview
+
+```mermaid
+flowchart LR
+    devices["Devices in your network"] -- "NTP, port 123/udp" --> chronyd
+    upstream["Upstream NTP servers"] -- NTP --> chronyd
+    subgraph app["Chrony NTP + MQTT"]
+        chronyd["chronyd"]
+        web["Web page<br/>(ingress)"]
+        kpi["Sensor publisher"]
+        store[("/data<br/>clients, totals, drift")]
+        chronyd -- "chronyc every 15 s" --> web
+        web <--> store
+        web -- "status file" --> kpi
+        chronyd -- "chronyc tracking" --> kpi
+    end
+    chronyd -. "optional: sets the host clock" .-> host["Host clock"]
+    kpi -- "MQTT discovery + states" --> broker["MQTT broker"]
+    broker --> ha["Home Assistant<br/>Sync problem<br/>NTP requests missing"]
+    ha --> automations["Your automations"]
+    web -- "Open web UI" --> ha
+```
+
+The [documentation](chrony_ntp/DOCS.md) covers the options, the page, the sensors, example automations and troubleshooting. Changes are listed in the [changelog](chrony_ntp/CHANGELOG.md).
 
 ## Installation
 
@@ -33,10 +58,7 @@ The page (**Open web UI** on the app's page, or in the sidebar with **Show in si
    https://github.com/n-schilling/ha-app-chrony-mqtt
    ```
 
-2. Open the app from the app store.
-3. Install **Chrony NTP + MQTT**, review the options and start it.
-
-See [the documentation](chrony_ntp/DOCS.md) for the sensors, options, example automations and troubleshooting. Changes are listed in the [changelog](chrony_ntp/CHANGELOG.md).
+2. Install **Chrony NTP + MQTT**, review the options and start it.
 
 ## Support
 

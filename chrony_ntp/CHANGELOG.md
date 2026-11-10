@@ -2,6 +2,35 @@
 
 All notable changes to this app are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the app uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.1.0] - 2026-11-10
+
+### Added
+
+- The app's name and version at the bottom of the web page
+- Option `log_level: debug`; the web page now follows `log_level` as well and logs once per outage when chronyc does not answer or its status for the sensors cannot be written
+- chrony keeps the frequency error of the host clock in the app's data folder (`/data/chrony/drift`), so offset and skew settle soon after a restart
+- chrony answers each client at most about once in two seconds on average (bursts of 16); floods from one address count as dropped requests
+- Requires Home Assistant 2026.11 or later
+
+### Changed
+
+- The web page uses the stylesheet all of these apps share, with Home Assistant 2026.11's colours, buttons and text fields
+- The page keeps at most 1000 clients; beyond that, addresses that asked only once go first, then those away longest. Clients with a name or note stay
+- Reverse DNS lookups run in the background, so a slow resolver no longer holds up reading chrony or the refresh button
+- chrony steps the clock only in its first three updates (`makestep 1 3`) instead of `initstepslew`, and its configuration is written anew on every start
+- The broker's credentials go to the MQTT clients in a file readable by root only instead of on their command line; a broker with TLS is checked against the system's certificates
+- The device in Home Assistant links to the app's page under **Settings → Apps**
+- Documentation for Home Assistant 2026.11, with diagrams and new screenshots
+
+### Fixed
+
+- Once the connection that carries the last will broke (e.g. a restart of the broker), it was not rebuilt: the sensors stayed unavailable until the next update, up to `mqtt_interval`, and a later crash of the app no longer marked them unavailable. It now reconnects, and the app then announces the device and publishes the states at once
+- The device was not announced when the broker did not take the discovery message at start (e.g. while Mosquitto was still starting); the app now tries again with every update until it does
+- A client list damaged on disk was dropped without a word and overwritten; it is now kept as `clients.json.broken` and the log says so
+- Saving the client list when the app stops could collide with a read of chrony running at the same time
+- Right after the start, before its first sync, the page showed chrony's leap status instead of “Not synchronized”
+- Connections to the web page that send nothing are closed after 10 seconds, and connections from anywhere but Home Assistant's ingress before they take up a thread
+
 ## [2.0.0] - 2026-11-02
 
 ### Added
