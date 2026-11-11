@@ -3,5 +3,8 @@
 # The sensor publisher runs as user chronymqtt, not as root and apart from
 # chronyd, which faces the network: only this user can read the broker's
 # password. chronyc tracking reaches chronyd over its local UDP port. bashio
-# keeps its cache in the publisher's own folder, created by init-chrony.
-CACHE_DIR=/run/chrony-mqtt/bashio exec /command/s6-setuidgid chronymqtt /usr/local/bin/chrony-mqtt-kpi
+# keeps its cache in the publisher's own folder, created by init-chrony; it is
+# set after with-contenv, which replaces the environment, and bashio is called
+# directly, so the script's own with-contenv line does not replace it again.
+exec /command/with-contenv /command/s6-setuidgid chronymqtt \
+    /usr/bin/env CACHE_DIR=/run/chrony-mqtt/bashio /usr/bin/bashio /usr/local/bin/chrony-mqtt-kpi

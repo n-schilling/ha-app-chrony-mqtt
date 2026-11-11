@@ -89,7 +89,7 @@ expect 'web page runs as chronyd, without the Supervisor token' \
     "$(grep -c '^exec env -u SUPERVISOR_TOKEN /command/s6-setuidgid chrony python3 ' "${S6}/web/run")" 1
 expect 'chronyd without the Supervisor token' "$(grep -c '^exec env -u SUPERVISOR_TOKEN chronyd ' "${S6}/chrony/run")" 1
 expect 'publisher runs as its own user' \
-    "$(grep -c 's6-setuidgid chronymqtt /usr/local/bin/chrony-mqtt-kpi$' "${S6}/mqtt-kpi/run")" 1
+    "$(grep -c 's6-setuidgid chronymqtt' "${S6}/mqtt-kpi/run")|$(grep -c 'CACHE_DIR=/run/chrony-mqtt/bashio /usr/bin/bashio /usr/local/bin/chrony-mqtt-kpi$' "${S6}/mqtt-kpi/run")" '1|1'
 expect 'the publisher user can start it' "$(su -s /bin/sh chronymqtt -c "test -x ${KPI_SCRIPT}"; echo $?)" 0
 expect 'the publisher user is not in the group chrony' "$(id -Gn chronymqtt)" chronymqtt
 
