@@ -3,8 +3,8 @@ abi <abi/3.0>,
 
 # chronyd serves NTP and may set the host clock (SYS_TIME); the web page and
 # the sensor publisher read chronyc and talk to the MQTT broker. s6-overlay
-# and the setup run as root; chronyd, the page and the publisher run as user
-# chrony. Measured on Home Assistant OS in complain mode before it enforced.
+# and the setup run as root; chronyd and the page run as user chrony, the
+# publisher as user chronymqtt. Tested on a real installation.
 profile chrony_ntp flags=(attach_disconnected,mediate_deleted) {
   #include <abstractions/base>
 

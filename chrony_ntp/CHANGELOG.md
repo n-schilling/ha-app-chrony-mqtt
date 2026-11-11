@@ -7,7 +7,7 @@ All notable changes to this app are documented here. The format follows [Keep a 
 ### Security
 
 - The web page and the sensor publisher no longer run as root. The page runs as chronyd's own user (only that user and root may ask chronyd for its clients), the publisher as a user of its own that alone can read the broker's password; chronyd and the page do not get the Supervisor token
-- A narrower AppArmor profile: only the capabilities, networks, programs and paths the app uses, measured on Home Assistant OS before it was enforced
+- A narrower AppArmor profile: only the capabilities, networks, programs and paths the app uses, tested on a real installation
 
 ### Changed
 
