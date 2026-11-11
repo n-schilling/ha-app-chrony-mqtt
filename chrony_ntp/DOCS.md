@@ -9,6 +9,8 @@ Runs chrony as an NTP server on port 123/udp, so devices in your network can tak
 - Port 123/udp free on the host
 - Devices that take their time from it: give them the Home Assistant host as NTP server (e.g. by DHCP option 42), or redirect NTP from a network segment to it on your router. To check it from a computer in your network: `sntp <home-assistant-host>`
 
+The app asks for the `SYS_TIME` capability, so chrony may set the host clock when `set_system_clock` is on, and for port 123/udp on the host. Only the setup at the start runs as root: chronyd and the web page run as chrony's own user, the sensor publisher as a user of its own that alone can read the broker's password. An AppArmor profile allows only the capabilities, networks, programs and paths the app uses.
+
 ## Options
 
 | Option | Default | Meaning |
