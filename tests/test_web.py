@@ -388,7 +388,7 @@ class Views(Fixture):
         for tab in ("overview", "upstream", "clients"):
             page = w.render(state, "en", None, tab=tab)
             header = page[page.index("<header>"):page.index("</header>")]
-            self.assertRegex(header, r'^<header><img class="app-icon"[^>]*><h1>NTP server</h1><nav class="tabs">')
+            self.assertRegex(header, r'^<header><img class="app-icon"[^>]*><h1>Chrony NTP \+ MQTT</h1><nav class="tabs">')
             self.assertEqual(re.findall(r'<a class="[a-z]*" href="([^"]*)"', header), ["?", "?tab=upstream", "?tab=clients"])
             self.assertEqual(re.findall(r'<a class="active" href="([^"]*)" aria-current="page">', header),
                              ["?" if tab == "overview" else f"?tab={tab}"])
@@ -584,7 +584,7 @@ class Page(Fixture):
         state = self.state()
         page = w.render(state, "de", "a1b2c3d4_chrony_ntp")
         stamp = time.strftime("%H:%M:%S", time.localtime(state.at))
-        self.assertRegex(page, '<header><img class="app-icon" src="icon.png" alt="" width="24" height="24"><h1>NTP-Server</h1>'
+        self.assertRegex(page, '<header><img class="app-icon" src="icon.png" alt="" width="24" height="24"><h1>Chrony NTP \\+ MQTT</h1>'
                                '<nav class="tabs">.*</nav><div class="actions" id="actions">'
                                f'<span class="stamp opt">Stand {stamp}</span>'
                                '<a class="icon-button" href="" id="refresh" role="button" title="Aktualisieren"[^>]*>'

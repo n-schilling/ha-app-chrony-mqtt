@@ -7,6 +7,7 @@ All notable changes to this app are documented here. The format follows [Keep a 
 ### Changed
 
 - The page is split into views instead of one long page, as tabs in the header row next to the name, like Network Plus: Overview, Upstream and Clients. The overview sums up (the sync state, the server's figures and how many clients are active), its lines lead to the views; Upstream holds the sources and the accuracy, Clients the list with its filter, search and edit dialog. The view is in the URL (`?tab=`), so reload and back keep it, and the page's own refresh stays on it. On phone width the tabs are a bar with icons at the bottom
+- The page's header and title show the app's name as in the app store, "Chrony NTP + MQTT", instead of "NTP server"
 
 ## [2.3.0] - 2026-11-11
 

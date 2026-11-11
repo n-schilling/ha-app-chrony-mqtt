@@ -91,7 +91,7 @@ SHARED_SCRIPT_FILE = STYLESHEET.with_name("ha-lang.js")
 
 TEXT = {
     "en": {
-        "title": "NTP server", "settings": "Settings", "refresh": "Refresh", "as_of": "As of {}", "status": "Status", "accuracy": "Accuracy", "synced": "Synchronized with {}",
+        "title": APP_NAME, "settings": "Settings", "refresh": "Refresh", "as_of": "As of {}", "status": "Status", "accuracy": "Accuracy", "synced": "Synchronized with {}",
         "unsynced": "Not synchronized", "local": "Serving its own clock, no upstream source",
         "leap": "Leap status: {}", "reference": "Reference source", "stratum": "Stratum",
         "offset": "System offset", "rms": "RMS offset", "frequency": "Frequency", "skew": "Skew",
@@ -118,7 +118,7 @@ TEXT = {
         "overview": "Overview", "upstream": "Upstream", "clients_summary": "{} active, {} inactive",
     },
     "de": {
-        "title": "NTP-Server", "settings": "Einstellungen", "refresh": "Aktualisieren", "as_of": "Stand {}", "status": "Status", "accuracy": "Genauigkeit", "synced": "Synchron mit {}",
+        "title": APP_NAME, "settings": "Einstellungen", "refresh": "Aktualisieren", "as_of": "Stand {}", "status": "Status", "accuracy": "Genauigkeit", "synced": "Synchron mit {}",
         "unsynced": "Nicht synchronisiert", "local": "Verteilt die eigene Uhr, keine Upstream-Quelle",
         "leap": "Schaltsekunden-Status: {}", "reference": "Referenzquelle", "stratum": "Stratum",
         "offset": "Systemabweichung", "rms": "RMS-Abweichung", "frequency": "Frequenz", "skew": "Streuung",

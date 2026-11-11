@@ -53,8 +53,8 @@ HOST = "a1b2c3d4-chrony-ntp"
 SLUG = "a1b2c3d4_chrony_ntp"
 INGRESS = "/api/hassio_ingress/demo-token/"
 NET, APP, PROXY = "chrony-page-check", "chrony-page-check-app", "chrony-page-check-ingress"
-TEXTS = {"en-US": ("NTP server", "As of", "Refresh", "Settings"),
-         "de-DE": ("NTP-Server", "Stand", "Aktualisieren", "Einstellungen")}
+TEXTS = {"en-US": ("Chrony NTP + MQTT", "As of", "Refresh", "Settings"),
+         "de-DE": ("Chrony NTP + MQTT", "Stand", "Aktualisieren", "Einstellungen")}
 # The views (tabs in the header), where each one is, and their labels
 TABS = (("overview", "?"), ("upstream", "?tab=upstream"), ("clients", "?tab=clients"))
 TAB_LABELS = {"en-US": ["Overview", "Upstream", "Clients"], "de-DE": ["Übersicht", "Upstream", "Clients"]}
@@ -249,7 +249,7 @@ def run(image: str, shots: bool) -> None:
         p = page(1200, 760, "light", "en-US", base + "/")
         frame = p.frame_locator("#ingress")
         frame.locator("header h1").wait_for()
-        check(frame.locator("header h1").text_content() == "NTP server", "page shown in the ingress frame")
+        check(frame.locator("header h1").text_content() == NAME, "page shown in the ingress frame")
         frame.locator(f'header a[href="/config/app/{SLUG}/config"]').click()
         p.wait_for_url(f"**/config/app/{SLUG}/config")
         check(p.url == f"{base}/config/app/{SLUG}/config", "settings open outside the frame")
