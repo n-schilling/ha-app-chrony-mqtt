@@ -1,5 +1,5 @@
 name: Chrony NTP + MQTT
-version: "2.2.1"
+version: "2.3.0"
 slug: chrony_ntp
 description: Local NTP server (chrony) with a web page of its state and clients, and problem sensors via MQTT discovery
 url: https://github.com/n-schilling/ha-app-chrony-mqtt

@@ -14,6 +14,8 @@ RUN \
     && adduser -S -D -H -G chronymqtt -h /nonexistent -s /sbin/nologin chronymqtt
 
 COPY rootfs /
+# The store icon, also at the left of the page's header (served as icon.png)
+COPY icon.png /usr/local/share/ha-app/icon.png
 
 ARG BUILD_ARCH BUILD_DATE BUILD_DESCRIPTION BUILD_NAME BUILD_REF BUILD_REPOSITORY BUILD_VERSION
 # The version from config.yaml, which the Supervisor (and CI) pass at build

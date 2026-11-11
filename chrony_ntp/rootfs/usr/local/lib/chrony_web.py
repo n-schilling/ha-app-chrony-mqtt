@@ -167,7 +167,24 @@ def stylesheet() -> str:
         return APP_STYLE
 
 
+# The app's store icon at the left of the header, copied into the image next
+# to the stylesheet; the page links it as icon.png, relative to the ingress path
+APP_ICON_FILE = STYLESHEET.with_name("icon.png")
+
+
+def app_icon() -> bytes | None:
+    try:
+        return APP_ICON_FILE.read_bytes()
+    except OSError:
+        LOGGER.warning("Icon %s missing", APP_ICON_FILE)
+        return None
+
+
+APP_ICON = app_icon()
+APP_ICON_TAG = '<img class="app-icon" src="icon.png" alt="" width="24" height="24">'
+
 APP_STYLE = """
+header > .app-icon { flex: none; width: 24px; height: 24px; margin-right: 12px; }
 .dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; background: var(--disabled-text-color); }
 .dot.on { background: var(--success-color); }
 .sub.memo { max-width: 320px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
@@ -986,7 +1003,7 @@ def render(state: State, lang: str, slug: str | None, now: float | None = None, 
     return (f'<!doctype html><html lang="{lang}"><head><meta charset="utf-8">'
             '<meta name="viewport" content="width=device-width, initial-scale=1">'
             f"<title>{esc(t['title'])}</title><style>{stylesheet()}</style><script>{SCRIPT}</script></head><body>"
-            f'<header><h1>{esc(t["title"])}</h1><div class="actions" id="actions">{actions}</div></header>'
+            f'<header>{APP_ICON_TAG}<h1>{esc(t["title"])}</h1><div class="actions" id="actions">{actions}</div></header>'
             # The dialog stays outside main, which the script swaps for a fresh copy
             f'<main>{body}</main>{edit_dialog(t)}<footer class="version">{esc(about)}</footer></body></html>')
 
@@ -1016,7 +1033,7 @@ def handler(state: State, slug: str | None, allowed: set[str], version: str | No
         def _refused(self) -> bool:
             if allowed and self.client_address[0] not in allowed:
                 self._send(403, "text/plain", b"only through Home Assistant")
-            elif self.path.split("?", 1)[0] != "/":
+            elif self.path.split("?", 1)[0] not in ("/", "/icon.png"):
                 self._send(404, "text/plain", b"not found")
             else:
                 return False
@@ -1024,6 +1041,12 @@ def handler(state: State, slug: str | None, allowed: set[str], version: str | No
 
         def do_GET(self) -> None:  # noqa: N802 (the standard library's name)
             if self._refused():
+                return
+            if self.path.split("?", 1)[0] == "/icon.png":
+                if APP_ICON is None:
+                    self._send(404, "text/plain", b"not found")
+                else:
+                    self._send(200, "image/png", APP_ICON, "max-age=86400")
                 return
             # The refresh button asks for a read of chrony at once
             if "refresh=1" in self.path.partition("?")[2].split("&"):
@@ -1033,6 +1056,9 @@ def handler(state: State, slug: str | None, allowed: set[str], version: str | No
 
         def do_POST(self) -> None:  # noqa: N802
             if self._refused():
+                return
+            if self.path.split("?", 1)[0] != "/":
+                self._send(405, "text/plain", b"not allowed")
                 return
             # Only the page's script sends JSON; a form of another site cannot
             if self.headers.get_content_type() != "application/json":
@@ -1048,11 +1074,11 @@ def handler(state: State, slug: str | None, allowed: set[str], version: str | No
                 return
             self._send(code, "text/plain", b"")
 
-        def _send(self, code: int, kind: str, body: bytes) -> None:
+        def _send(self, code: int, kind: str, body: bytes, cache: str = "no-store") -> None:
             self.send_response(code)
             self.send_header("Content-Type", kind)
             self.send_header("Content-Length", str(len(body)))
-            self.send_header("Cache-Control", "no-store")
+            self.send_header("Cache-Control", cache)
             self.end_headers()
             self.wfile.write(body)
 

@@ -526,7 +526,8 @@ class Page(Fixture):
     def test_names_from_dns_escaped(self) -> None:
         state = self.state(table={"192.0.2.6": '<img src=x onerror="alert(1)">'})
         page = w.render(state, "en", None)
-        self.assertNotIn("<img", page)
+        self.assertNotIn("<img src=x", page)
+        self.assertEqual(page.count("<img"), 1)  # the app's icon in the header
         self.assertIn("&lt;img", page)
 
     def test_never_synchronized(self) -> None:
@@ -548,7 +549,7 @@ class Page(Fixture):
         state = self.state()
         page = w.render(state, "de", "a1b2c3d4_chrony_ntp")
         stamp = time.strftime("%H:%M:%S", time.localtime(state.at))
-        self.assertRegex(page, '<header><h1>NTP-Server</h1><div class="actions" id="actions">'
+        self.assertRegex(page, '<header><img class="app-icon" src="icon.png" alt="" width="24" height="24"><h1>NTP-Server</h1><div class="actions" id="actions">'
                                f'<span class="stamp opt">Stand {stamp}</span>'
                                '<a class="icon-button" href="" id="refresh" role="button" title="Aktualisieren"[^>]*>'
                                '<svg[^>]*><path[^>]*/></svg></a>'
@@ -696,6 +697,26 @@ class Server(Fixture):
     def test_changes_only_through_the_ingress_proxy(self) -> None:
         base = self.serve({w.INGRESS_PEER}) + "/"
         self.assertEqual(self.post(base, json.dumps({"action": "forget", "ip": "192.0.2.6"}).encode()), 403)
+
+    def test_app_icon(self) -> None:
+        # The store icon, copied into the image; the page links it relative to the ingress path
+        # (in the image the checkout is not there; the image's copy is then the one to serve)
+        repo = TESTS.parent / "chrony_ntp/icon.png"
+        icon = repo.read_bytes() if repo.exists() else w.APP_ICON
+        self.assertTrue(icon and icon.startswith(b"\x89PNG"), "icon.png in the image or the checkout")
+        base = self.serve(set())
+        w.APP_ICON, saved = icon, w.APP_ICON
+        try:
+            with urllib.request.urlopen(base + "/icon.png") as answer:
+                self.assertEqual((answer.status, answer.headers["Content-Type"], answer.read()), (200, "image/png", icon))
+                self.assertEqual(answer.headers["Cache-Control"], "max-age=86400")
+            self.assertEqual(self.post(base + "/icon.png", b"{}"), 405)
+            w.APP_ICON = None
+            self.assertEqual(self.get(base + "/icon.png")[0], 404)
+        finally:
+            w.APP_ICON = saved
+        self.assertIn('<header><img class="app-icon" src="icon.png" alt="" width="24" height="24"><h1>',
+                      self.get(base + "/")[1])
 
     def test_page_has_the_dialog_outside_main(self) -> None:
         page = self.get(self.serve(set()) + "/")[1]

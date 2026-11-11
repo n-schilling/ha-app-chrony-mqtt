@@ -115,7 +115,14 @@ def header(p: Page | Frame, lang: str, phone: bool) -> None:
       const h = document.querySelector("body > header");
       const a = h && h.querySelector(":scope > .actions");
       return h && {
-        first: h.firstElementChild.outerHTML.slice(0, 4), h1: h.querySelector(":scope > h1")?.textContent,
+        tags: [...h.children].slice(0, 2).map((k) => k.tagName.toLowerCase() + (k.className ? "." + k.className.split(" ").join(".") : "")),
+        h1: h.querySelector(":scope > h1")?.textContent,
+        // The store icon left of the name: loaded, 24 px, in the row of the name
+        icon: h.firstElementChild.matches("img.app-icon") ? (() => {
+          const box = h.firstElementChild.getBoundingClientRect(), name = h.querySelector(":scope > h1").getBoundingClientRect();
+          return {src: h.firstElementChild.getAttribute("src"), loaded: h.firstElementChild.complete && h.firstElementChild.naturalWidth > 0,
+                  size: [box.width, box.height], row: Math.abs((box.top + box.bottom) / 2 - (name.top + name.bottom) / 2) < 2};
+        })() : null,
         kids: a ? [...a.children].map((e) => ({ tag: e.tagName, id: e.id, cls: e.className, role: e.getAttribute("role"),
           href: e.getAttribute("href"), target: e.getAttribute("target"), title: e.title, text: e.textContent,
           shown: e.offsetParent !== null, icon: !!e.querySelector("svg path") })) : [],
@@ -126,7 +133,10 @@ def header(p: Page | Frame, lang: str, phone: bool) -> None:
     if shape is None:
         return
     kids = shape["kids"]
-    check(shape["first"] == "<h1>" and shape["h1"] == title, f"{lang}: header starts with h1 {title!r}")
+    check(shape["tags"] == ["img.app-icon", "h1"] and shape["h1"] == title,
+          f"{lang}: header starts with the icon, then h1 {title!r} ({shape['tags']})")
+    check(shape["icon"] == {"src": "icon.png", "loaded": True, "size": [24, 24], "row": True},
+          f"{lang}: the app's icon shows, 24 px, in the row of the name ({shape['icon']})")
     check(len(kids) == 3, f"{lang}: three actions in the header ({len(kids)})")
     if len(kids) == 3:
         stamp, again, gear = kids
