@@ -2,9 +2,10 @@
 # shellcheck shell=bash
 # ==============================================================================
 # The web page behind Home Assistant's ingress, as chronyd's user: it reads
-# chronyc, whose command socket admits only that user and root
+# chronyc, whose command socket admits only that user and root. It needs no
+# access to the Supervisor, so it does not get its token.
 # ==============================================================================
 bashio::log.info 'Starting the web page'
 LOG_LEVEL=$(bashio::config 'log_level' 'info')
 export LOG_LEVEL
-exec s6-setuidgid chrony python3 /usr/local/lib/chrony_web.py
+exec env -u SUPERVISOR_TOKEN /command/s6-setuidgid chrony python3 /usr/local/lib/chrony_web.py

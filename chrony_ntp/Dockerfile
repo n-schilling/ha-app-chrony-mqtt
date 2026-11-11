@@ -9,7 +9,9 @@ RUN \
     apk add --no-cache \
         chrony~4.8 \
         mosquitto-clients \
-        python3
+        python3 \
+    && addgroup -S chronymqtt \
+    && adduser -S -D -H -G chronymqtt -h /nonexistent -s /sbin/nologin chronymqtt
 
 COPY rootfs /
 

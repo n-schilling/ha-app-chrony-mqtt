@@ -60,8 +60,9 @@ expect 'steps only in the first updates' "$(grep '^makestep' "${CONF}")" 'makest
 expect 'rate limit for clients' "$(grep '^ratelimit' "${CONF}")" 'ratelimit interval 1 burst 16'
 expect 'bounded client log' "$(grep -c '^clientloglimit ' "${CONF}")" 1
 expect 'no initstepslew' "$(grep -c '^initstepslew' "${CONF}")" 0
-expect 'folders of the page and the publisher belong to chronyd' \
-    "$(stat -c '%U %a' /data/web /run/chrony-app | tr '\n' '|')" 'chrony 700|chrony 700|'
+expect 'folders of the page belong to chronyd' \
+    "$(stat -c '%U %a' /data/web /run/chrony-web | tr '\n' '|')" 'chrony 700|chrony 755|'
+expect 'folder of the publisher belongs to its own user' "$(stat -c '%U %a' /run/chrony-mqtt)" 'chronymqtt 700'
 expect 'chronyd accepts the pool configuration' "$(chronyd -p -f "${CONF}" > /dev/null 2>&1; echo $?)" 0
 
 init_config '{"mode":"server","ntp_pool":"","ntp_server":["a.example","b.example","c.example"]}'
@@ -84,9 +85,13 @@ expect 'an existing store is not overwritten' "$(cat /data/web/clients.json)" '{
 rm -f /data/clients.json
 
 echo '# Services without root'
-expect 'web page runs as chronyd' "$(grep -c '^exec s6-setuidgid chrony python3 ' "${S6}/web/run")" 1
-expect 'publisher runs as chronyd' "$(grep -c 's6-setuidgid chrony /usr/local/bin/chrony-mqtt-kpi$' "${S6}/mqtt-kpi/run")" 1
-expect 'chronyd can start the publisher' "$(su -s /bin/sh chrony -c "test -x ${KPI_SCRIPT}"; echo $?)" 0
+expect 'web page runs as chronyd, without the Supervisor token' \
+    "$(grep -c '^exec env -u SUPERVISOR_TOKEN /command/s6-setuidgid chrony python3 ' "${S6}/web/run")" 1
+expect 'chronyd without the Supervisor token' "$(grep -c '^exec env -u SUPERVISOR_TOKEN chronyd ' "${S6}/chrony/run")" 1
+expect 'publisher runs as its own user' \
+    "$(grep -c 's6-setuidgid chronymqtt /usr/local/bin/chrony-mqtt-kpi$' "${S6}/mqtt-kpi/run")" 1
+expect 'the publisher user can start it' "$(su -s /bin/sh chronymqtt -c "test -x ${KPI_SCRIPT}"; echo $?)" 0
+expect 'the publisher user is not in the group chrony' "$(id -Gn chronymqtt)" chronymqtt
 
 echo '# Allowed networks and offline fallback'
 POOL='"mode":"pool","ntp_pool":"pool.ntp.org","ntp_server":[]'

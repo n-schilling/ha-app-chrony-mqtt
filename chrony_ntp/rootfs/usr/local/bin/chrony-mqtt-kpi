@@ -2,7 +2,7 @@
 # shellcheck shell=bash
 # ==============================================================================
 # Publishes the server's problem sensors through MQTT discovery; everything
-# else is on the web page. Started by the s6 service mqtt-kpi as chronyd's user
+# else is on the web page. Started by the s6 service mqtt-kpi as user chronymqtt
 # ==============================================================================
 readonly NODE='chrony_ntp'
 readonly DEV_NAME='Chrony NTP Server'
@@ -11,7 +11,7 @@ readonly SUPPORT_URL='https://github.com/n-schilling/ha-app-chrony-mqtt'
 readonly TOPIC="chrony/${NODE}"
 readonly AVAIL="${TOPIC}/availability"
 # Written by the web page on every read of chrony
-readonly STATUS=${CHRONY_WEB_STATUS:-/run/chrony-app/status.json}
+readonly STATUS=${CHRONY_WEB_STATUS:-/run/chrony-web/status.json}
 # Sensors of versions before 2.0.0, now on the web page only; their retained
 # states are cleared
 readonly GONE=(clients clients/attr clients_active ntp_requests ntp_dropped stratum
@@ -37,7 +37,7 @@ bashio::services.available 'mqtt' || bashio::exit.nok 'No MQTT service available
 
 # The broker and its credentials go into the clients' own option files, one
 # option per line, so the password is in no command line (ps, /proc)
-MQTT_CONFIG=${MQTT_CONFIG:-/run/chrony-app/mqtt}
+MQTT_CONFIG=${MQTT_CONFIG:-/run/chrony-mqtt/mqtt}
 (
     umask 077
     mkdir -p "${MQTT_CONFIG}"

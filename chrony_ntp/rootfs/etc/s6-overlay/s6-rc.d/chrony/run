@@ -4,4 +4,5 @@ declare -a options
 bashio::log.info "Starting chronyd..."
 options+=(-d)
 bashio::config.false 'set_system_clock' && options+=(-x)
-exec chronyd "${options[@]}"
+# chronyd faces the network and needs no access to the Supervisor
+exec env -u SUPERVISOR_TOKEN chronyd "${options[@]}"

@@ -15,10 +15,14 @@ fi
 cp "${CHRONY_BASE}" "${CHRONY_CONF}"
 # The drift file is written by chronyd after it gave up root
 install -d -o chrony -g chrony -m 0750 /data/chrony
-# The web page and the sensor publisher run as chronyd's user as well: the
-# page keeps its clients in /data/web; the status for the sensors, the MQTT
-# client options and bashio's cache go to /run/chrony-app
-install -d -o chrony -g chrony -m 0700 /data/web /run/chrony-app
+# The web page runs as chronyd's user as well, since chronyc's command socket
+# admits only that user and root; it keeps its clients in /data/web and writes
+# the status for the sensors to /run/chrony-web. The sensor publisher runs as
+# user chronymqtt and keeps the MQTT client options and bashio's cache, which
+# hold the broker's password, in /run/chrony-mqtt
+install -d -o chrony -g chrony -m 0700 /data/web
+install -d -o chrony -g chrony -m 0755 /run/chrony-web
+install -d -o chronymqtt -g chronymqtt -m 0700 /run/chrony-mqtt
 # Up to 2.1.0 the page kept its clients in /data, as root
 for file in clients.json clients.json.broken; do
     if [[ -f "/data/${file}" && ! -e "/data/web/${file}" ]]; then
