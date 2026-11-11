@@ -31,6 +31,8 @@ chrony keeps the frequency error of the host clock in the app's data folder, so 
 
 **Open web UI** on the app's page opens it; **Show in sidebar** adds **NTP Server** to the sidebar (administrators only). The page follows your Home Assistant theme and updates itself every 30 seconds; the refresh button in the header reads chrony at once, the time next to it shows how current the data is, and the gear opens the app's configuration. The app's name and version are at the bottom of the page.
 
+The page speaks the language of your Home Assistant interface (your profile's language): German, else English. It keeps that language in a cookie for this page only; after you change the language in your profile, the page follows the next time you open it, reloading once.
+
 - **Status**: synchronized or not, whether clients still ask, reference source, stratum, last upstream sync, system offset, and the NTP requests and dropped requests in total and since the app started
 - **Upstream sources**: each server chrony uses, its state (selected, combined, unreachable, …), how many of the last 8 polls it answered, its last reply and offset
 - **Accuracy**: RMS offset, frequency, skew, root delay and dispersion, update interval

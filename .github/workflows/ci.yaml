@@ -1,9 +1,11 @@
 name: CI
 # scripts/check.sh runs the same checks locally; keep the two in step.
 
+# Not on main: a commit reaches main only after CI passed for it on dev, and
+# the release workflow checks that before it tags (ci-passed.sh)
 on:
   push:
-    branches: [main, dev]
+    branches: [dev]
   pull_request:
   schedule:
     # Weekly, so a new base image or linter release that breaks the build shows up
@@ -46,42 +48,42 @@ jobs:
 
   test:
     name: Build and test (${{ matrix.arch }})
-    runs-on: ubuntu-latest
+    # Each architecture on a runner of its own kind, no emulation: the image
+    # is built and tested natively (the arm64 runners are free for public
+    # repositories)
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
         include:
           - arch: amd64
-            platform: linux/amd64
+            runner: ubuntu-24.04
           - arch: aarch64
-            platform: linux/arm64
+            runner: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
-      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
       - name: Build
-        env:
-          ARCH: ${{ matrix.arch }}
-          PLATFORM: ${{ matrix.platform }}
         run: |
           version=$(yq -r '.version' chrony_ntp/config.yaml)
-          docker buildx build --platform "${PLATFORM}" \
-            --build-arg "BUILD_VERSION=${version}" --load -t chrony-mqtt:test chrony_ntp
-      - name: Test
+          docker build --build-arg "BUILD_VERSION=${version}" -t chrony-mqtt:test chrony_ntp
+      - name: Image architecture
         env:
-          PLATFORM: ${{ matrix.platform }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          arch=$(docker image inspect --format '{{.Architecture}}' chrony-mqtt:test)
+          echo "image: ${arch}"
+          [[ "${ARCH}/${arch}" == amd64/amd64 || "${ARCH}/${arch}" == aarch64/arm64 ]]
+      - name: Test
         run: >-
-          docker run --rm --network none --platform "${PLATFORM}"
+          docker run --rm --network none
           -v "${PWD}/tests:/tests:ro" --entrypoint bash chrony-mqtt:test
           /tests/test_app.sh
       - name: Test the web page
-        env:
-          PLATFORM: ${{ matrix.platform }}
         run: >-
-          docker run --rm --network none --platform "${PLATFORM}"
+          docker run --rm --network none
           -v "${PWD}/tests:/tests:ro" --entrypoint python3 chrony-mqtt:test
           -m unittest discover -v -s /tests -p 'test_*.py'
 

@@ -471,10 +471,22 @@ class Formatting(unittest.TestCase):
         self.assertEqual(w.Format("en").log2(None), "–")
 
     def test_language(self) -> None:
-        self.assertEqual(w.lang_of("de-DE,de;q=0.9,en;q=0.8"), "de")
-        self.assertEqual(w.lang_of("en-US,de;q=0.5"), "en")
-        self.assertEqual(w.lang_of("fr"), "en")
-        self.assertEqual(w.lang_of(None), "en")
+        # Without the cookie of share/ha-app/ha-lang.js: the browser's languages
+        self.assertEqual(w.lang_of(None, "de-DE,de;q=0.9,en;q=0.8"), "de")
+        self.assertEqual(w.lang_of(None, "en-US,de;q=0.5"), "en")
+        self.assertEqual(w.lang_of("other=1", "fr"), "en")
+        self.assertEqual(w.lang_of(None, None), "en")
+
+    def test_language_of_home_assistant(self) -> None:
+        # The cookie decides, whatever the browser asks for
+        self.assertEqual(w.lang_of("a=b; ha_lang=de", "en-US"), "de")
+        self.assertEqual(w.lang_of("ha_lang=en", "de-DE,de"), "en")
+        self.assertEqual(w.lang_of("ha_lang=fr", "de-DE,de"), "en")
+
+    def test_shared_language_script_first(self) -> None:
+        shared = w.SHARED_SCRIPT_FILE.read_text(encoding="utf-8")
+        self.assertIn("ha_lang", shared)
+        self.assertTrue(w.SCRIPT.startswith(shared))
 
     def test_short_names(self) -> None:
         self.assertEqual(w.short_name("plug-kitchen.lan.example"), "plug-kitchen")
@@ -634,6 +646,13 @@ class Server(Fixture):
         self.assertEqual(code, 200)
         self.assertIn('<html lang="de">', page)
         self.assertEqual(self.get(base + "/other")[0], 404)
+
+    def test_page_in_home_assistants_language(self) -> None:
+        base = self.serve(set())
+        page = self.get(base + "/", **{"Cookie": "ha_lang=de", "Accept-Language": "en"})[1]
+        self.assertIn('<html lang="de">', page)
+        page = self.get(base + "/", **{"Cookie": "ha_lang=en", "Accept-Language": "de"})[1]
+        self.assertIn('<html lang="en">', page)
 
     def test_refresh_button_reads_chrony_at_once(self) -> None:
         reads = []

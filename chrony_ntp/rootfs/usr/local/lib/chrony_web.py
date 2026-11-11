@@ -84,6 +84,9 @@ LOCALHOST = ("127.0.0.1", "::1")
 # The look all the apps' pages share: /usr/local/share/ha-app/ha.css in the
 # image, the same place in the repository for the tests
 STYLESHEET = Path(__file__).resolve().parents[1] / "share/ha-app/ha.css"
+# Home Assistant's language for the page (cookie ha_lang), shared like the
+# stylesheet; it runs first, in the page's one script
+SHARED_SCRIPT_FILE = STYLESHEET.with_name("ha-lang.js")
 
 TEXT = {
     "en": {
@@ -307,6 +310,18 @@ SCRIPT = """(() => {
   document.addEventListener("input", (e) => { if (e.target.id === "edit-note") count(); });
   setInterval(() => { if (!document.hidden) update(false); }, REFRESH * 1000);
 })();""".replace("NAMES", json.dumps(THEME_VARS)).replace("REFRESH", str(REFRESH))
+
+
+def shared_script() -> str:
+    """The script all the apps share (ha-lang.js), which runs before this page's own."""
+    try:
+        return SHARED_SCRIPT_FILE.read_text(encoding="utf-8")
+    except OSError as err:
+        LOGGER.warning("Cannot read the shared script: %s", err)
+        return ""
+
+
+SCRIPT = shared_script() + SCRIPT
 
 
 # --- chronyc ----------------------------------------------------------------------
@@ -718,9 +733,18 @@ class State:
 
 
 # --- Formatting --------------------------------------------------------------------------
-def lang_of(header: str | None) -> str:
-    """German if the browser puts German before English, else English."""
-    for part in (header or "").split(","):
+def lang_of(cookie: str | None, accept: str | None = None) -> str:
+    """German or English, as Home Assistant's interface shows it.
+
+    The page script keeps Home Assistant's language in the cookie ha_lang
+    (share/ha-app/ha-lang.js): German for "de", English for everything else.
+    Only without that cookie, German if the browser puts German before English.
+    """
+    for part in (cookie or "").split(";"):
+        name, _, value = part.strip().partition("=")
+        if name == "ha_lang":
+            return "de" if value.strip().lower() == "de" else "en"
+    for part in (accept or "").split(","):
         code = part.split(";")[0].strip().lower()
         if code.startswith("de"):
             return "de"
@@ -1004,7 +1028,7 @@ def handler(state: State, slug: str | None, allowed: set[str], version: str | No
             # The refresh button asks for a read of chrony at once
             if "refresh=1" in self.path.partition("?")[2].split("&"):
                 state.refresh()
-            page = render(state, lang_of(self.headers.get("Accept-Language")), slug, version=version)
+            page = render(state, lang_of(self.headers.get("Cookie"), self.headers.get("Accept-Language")), slug, version=version)
             self._send(200, "text/html; charset=utf-8", page.encode())
 
         def do_POST(self) -> None:  # noqa: N802

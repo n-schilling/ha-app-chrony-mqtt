@@ -3,6 +3,9 @@
 address 172.30.32.2, the only peer the page lets in, and serves on port 8080:
 
     /                               a page that holds the app in a frame, as Home Assistant does
+    /?lang=de                       the same with a stand-in for the frontend's <home-assistant>
+                                    element, whose hass names that language (and light mode),
+                                    as the page reads it (share/ha-app/ha-lang.js)
     /api/hassio_ingress/<token>/... the app's page, passed on to APP with the
                                     path prefix taken off and X-Ingress-Path set, like the Supervisor
     /config/app/<slug>/config       where the settings button leads (outside the frame)
@@ -13,17 +16,29 @@ address 172.30.32.2, the only peer the page lets in, and serves on port 8080:
 from __future__ import annotations
 
 import html
+import re
 import sys
 import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import parse_qs
 
 PREFIX = "/api/hassio_ingress/demo-token"
 APP = sys.argv[1].rstrip("/") if len(sys.argv) > 1 else "http://127.0.0.1:8099"
-PASS_ON = ("Accept-Language", "Content-Type", "Content-Length")
+PASS_ON = ("Accept-Language", "Cookie", "Content-Type", "Content-Length")
 OUTER = f"""<!doctype html><html><head><meta charset="utf-8"><title>Home Assistant</title>
 <style>html, body, iframe {{ margin: 0; border: 0; width: 100%; height: 100%; display: block; }}</style></head>
-<body><home-assistant><iframe id="ingress" title="app" src="{PREFIX}/"></iframe></home-assistant></body></html>"""
+<body><home-assistant>HASS<iframe id="ingress" title="app" src="{PREFIX}/"></iframe></home-assistant></body></html>"""
+# Home Assistant's frontend as far as the page reads it: the user's language
+HASS = """<script>document.querySelector("home-assistant").hass =
+{ language: "LANG", locale: { language: "LANG" }, themes: { darkMode: false } };</script>"""
+LANG = re.compile(r"[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})?")
+
+
+def outer(query: str) -> str:
+    """The page around the frame; with ?lang=xx as Home Assistant in that language."""
+    lang = (parse_qs(query).get("lang") or [""])[0]
+    return OUTER.replace("HASS", HASS.replace("LANG", lang) if LANG.fullmatch(lang) else "")
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -55,8 +70,8 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802 (the standard library's name)
         if self.path.startswith(PREFIX + "/"):
             self._forward()
-        elif self.path == "/":
-            self._page(OUTER)
+        elif self.path.partition("?")[0] == "/":
+            self._page(outer(self.path.partition("?")[2]))
         elif self.path == "/favicon.ico":
             # Home Assistant has one; the browser asks for it also for a page in the frame
             self._send(200, {"Content-Type": "image/x-icon"}, b"")

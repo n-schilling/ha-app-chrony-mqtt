@@ -14,7 +14,10 @@ checks, in light, dark and at phone width, in English and German:
 - the version line "Chrony NTP + MQTT <version>" as the last element of body;
 - no console errors, no failed scripts and no Content Security Policy violations;
 - refresh, the client list's filter and the edit dialog work, and nothing is
-  wider than a phone.
+  wider than a phone;
+- the page takes Home Assistant's language over the browser's (a stand-in for
+  its frontend in German, English and French around the frame): reloading once
+  when it changes, never again, with the cookie for the ingress path only.
 
 Then it takes the screenshots, unless --check is given.
 
@@ -37,7 +40,7 @@ import time
 import urllib.request
 from pathlib import Path
 
-from playwright.sync_api import Error, Page, sync_playwright
+from playwright.sync_api import Error, Frame, Page, sync_playwright
 
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "docs/screenshots"
@@ -106,7 +109,7 @@ def start(image: str) -> str:
     raise SystemExit("The page did not come up")
 
 
-def header(p: Page, lang: str, phone: bool) -> None:
+def header(p: Page | Frame, lang: str, phone: bool) -> None:
     title, as_of, refresh, settings = TEXTS[lang]
     shape = p.evaluate("""() => {
       const h = document.querySelector("body > header");
@@ -207,7 +210,47 @@ def run(image: str, shots: bool) -> None:
         p.wait_for_url(f"**/config/app/{SLUG}/config")
         check(p.url == f"{base}/config/app/{SLUG}/config", "settings open outside the frame")
         done(p, "frame")
+
+        # The browser asks for English; the page follows Home Assistant's language
+        # (share/ha-app/ha-lang.js): one reload when it changes, none when not
+        print("==> In Home Assistant's language, not the browser's")
+        context = browser.new_context(viewport={"width": 1200, "height": 760}, locale="en-US",
+                                      extra_http_headers={"Accept-Language": "en"})
+        context.add_init_script(WATCH_CSP)
+        p = context.new_page()
+        p.errors = []
+        p.on("console", lambda m: m.type == "error" and p.errors.append(f"console: {m.text} ({m.location.get('url')})"))
+        p.on("pageerror", lambda e: p.errors.append(f"script: {e}"))
+        for ha_lang, lang, expected in (("de", "de", 2), ("de", "de", 1), ("en-GB", "en", 2), ("fr", "en", 2),
+                                        ("fr", "en", 1)):
+            where = f"Home Assistant in {ha_lang}"
+            app, loads = in_home_assistant(p, base, ha_lang)
+            shown = app.evaluate("[document.documentElement.lang, getComputedStyle(document.documentElement).visibility]")
+            check(shown == [lang, "visible"], f"{where}: page in {lang} and shown ({shown})")
+            check(loads == expected, f"{where}: loaded {expected} time(s) ({loads})")
+            header(app, {"de": "de-DE", "en": "en-US"}[lang], False)
+            held = [(k["value"], k["path"]) for k in context.cookies() if k["name"] == "ha_lang"]
+            check(held == [(ha_lang.split("-")[0], INGRESS)], f"{where}: cookie for the ingress path ({held})")
+        done(p, "language")
         browser.close()
+
+
+def in_home_assistant(p: Page, base: str, lang: str) -> tuple[Frame, int]:
+    """Opens the page in a stand-in for Home Assistant's frontend in that language;
+    the app's frame and how often it loaded."""
+    loads: list[str] = []
+
+    def seen(frame: Frame) -> None:
+        if frame.parent_frame is not None and frame.url.startswith(base + INGRESS):
+            loads.append(frame.url)
+
+    p.on("framenavigated", seen)
+    p.goto(f"{base}/?lang={lang}")
+    p.wait_for_timeout(1500)  # room for another reload, which must not come
+    p.remove_listener("framenavigated", seen)
+    app = next(f for f in p.frames if f.parent_frame is not None)
+    app.locator("body > header h1").wait_for()
+    return app, len(loads)
 
 
 def main() -> None:
