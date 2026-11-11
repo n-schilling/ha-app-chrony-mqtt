@@ -13,13 +13,15 @@ Requires Home Assistant 2026.11 or later.
 
 The page looks like Home Assistant's own settings, follows the theme in use and speaks the language of Home Assistant's interface (German or English). The data on these pictures is made up.
 
-<img src="docs/screenshots/overview.png" alt="Status with sync state and request totals, upstream sources and accuracy" width="700">
+<img src="docs/screenshots/overview.png" alt="Overview: sync state and client summary, each leading to its view, and the request totals" width="700">
+
+<img src="docs/screenshots/upstream.png" alt="Upstream view: upstream sources and accuracy" width="700">
 
 <img src="docs/screenshots/clients.png" alt="Client list filtered to active clients, with requests, interval and last request" width="700">
 
 <img src="docs/screenshots/edit.png" alt="Dialog to name a client, add a note or forget it" width="700">
 
-<img src="docs/screenshots/mobile-dark.png" alt="The page on a phone in dark mode, in German" width="260">
+<img src="docs/screenshots/mobile-dark.png" alt="The overview on a phone in dark mode, in German, with the tabs as a bar at the bottom" width="260">
 
 ## Overview
 

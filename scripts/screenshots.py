@@ -8,7 +8,10 @@ the page on under /api/hassio_ingress/<token>/ and holds it in a frame. A
 headless browser then opens the page as Home Assistant's ingress would and
 checks, in light, dark and at phone width, in English and German:
 
-- the header (STANDARD.md, section 7): the name, then the stamp "As of
+- every view (Overview, Upstream, Clients) by its URL, with the tabs after the
+  name in its row (on a phone a bar with icons at the bottom) and the right one
+  active; tab, reload and back in Home Assistant's frame;
+- the header (STANDARD.md, section 7): the icon, the name, then the stamp "As of
   HH:MM:SS", the refresh button and the settings button, which leads to
   /config/app/a1b2c3d4_chrony_ntp/config outside the frame (target _top);
 - the version line "Chrony NTP + MQTT <version>" as the last element of body;
@@ -52,6 +55,9 @@ INGRESS = "/api/hassio_ingress/demo-token/"
 NET, APP, PROXY = "chrony-page-check", "chrony-page-check-app", "chrony-page-check-ingress"
 TEXTS = {"en-US": ("NTP server", "As of", "Refresh", "Settings"),
          "de-DE": ("NTP-Server", "Stand", "Aktualisieren", "Einstellungen")}
+# The views (tabs in the header), where each one is, and their labels
+TABS = (("overview", "?"), ("upstream", "?tab=upstream"), ("clients", "?tab=clients"))
+TAB_LABELS = {"en-US": ["Overview", "Upstream", "Clients"], "de-DE": ["Übersicht", "Upstream", "Clients"]}
 # Collects Content Security Policy violations, which reach no console
 WATCH_CSP = """window.__csp = [];
 document.addEventListener("securitypolicyviolation", (e) => window.__csp.push(e.violatedDirective + " " + e.blockedURI));"""
@@ -98,8 +104,8 @@ def start(image: str) -> str:
     base = f"http://127.0.0.1:{port}"
     for _ in range(60):
         try:
-            with urllib.request.urlopen(base + INGRESS, timeout=2) as answer:
-                # Ready once the first read of chronyc and the name lookups are in
+            with urllib.request.urlopen(base + INGRESS + "?tab=clients", timeout=2) as answer:
+                # Ready once the first read of chronyc and the name lookups are in (the clients' view)
                 if answer.status == 200 and b"purifier-bedroom.lan" in answer.read():
                     return base
         except OSError:
@@ -109,13 +115,13 @@ def start(image: str) -> str:
     raise SystemExit("The page did not come up")
 
 
-def header(p: Page | Frame, lang: str, phone: bool) -> None:
+def header(p: Page | Frame, lang: str, phone: bool, tab: str = "overview") -> None:
     title, as_of, refresh, settings = TEXTS[lang]
     shape = p.evaluate("""() => {
       const h = document.querySelector("body > header");
       const a = h && h.querySelector(":scope > .actions");
       return h && {
-        tags: [...h.children].slice(0, 2).map((k) => k.tagName.toLowerCase() + (k.className ? "." + k.className.split(" ").join(".") : "")),
+        tags: [...h.children].slice(0, 3).map((k) => k.tagName.toLowerCase() + (k.className ? "." + k.className.split(" ").join(".") : "")),
         h1: h.querySelector(":scope > h1")?.textContent,
         // The store icon left of the name: loaded, 24 px, in the row of the name
         icon: h.firstElementChild.matches("img.app-icon") ? (() => {
@@ -123,6 +129,17 @@ def header(p: Page | Frame, lang: str, phone: bool) -> None:
           return {src: h.firstElementChild.getAttribute("src"), loaded: h.firstElementChild.complete && h.firstElementChild.naturalWidth > 0,
                   size: [box.width, box.height], row: Math.abs((box.top + box.bottom) / 2 - (name.top + name.bottom) / 2) < 2};
         })() : null,
+        // The views: tabs right after the name, in its row (on a phone a bar at the bottom of the window)
+        tabs: (() => {
+          const nav = h.querySelector(":scope > nav.tabs");
+          if (!nav) return null;
+          const name = h.querySelector(":scope > h1").getBoundingClientRect(), box = nav.getBoundingClientRect();
+          const mid = (r) => (r.top + r.bottom) / 2;
+          return {labels: [...nav.children].map((a) => a.textContent), hrefs: [...nav.children].map((a) => a.getAttribute("href")),
+                  active: [...nav.querySelectorAll("a.active[aria-current=page]")].map((a) => a.getAttribute("href")),
+                  row: Math.abs(mid(box) - mid(name)) < 2, bottom: Math.abs(box.bottom - window.innerHeight) < 1,
+                  icons: [...nav.children].every((a) => a.querySelector("svg") && getComputedStyle(a.querySelector("svg")).display !== "none")};
+        })(),
         kids: a ? [...a.children].map((e) => ({ tag: e.tagName, id: e.id, cls: e.className, role: e.getAttribute("role"),
           href: e.getAttribute("href"), target: e.getAttribute("target"), title: e.title, text: e.textContent,
           shown: e.offsetParent !== null, icon: !!e.querySelector("svg path") })) : [],
@@ -133,8 +150,16 @@ def header(p: Page | Frame, lang: str, phone: bool) -> None:
     if shape is None:
         return
     kids = shape["kids"]
-    check(shape["tags"] == ["img.app-icon", "h1"] and shape["h1"] == title,
-          f"{lang}: header starts with the icon, then h1 {title!r} ({shape['tags']})")
+    check(shape["tags"] == ["img.app-icon", "h1", "nav.tabs"] and shape["h1"] == title,
+          f"{lang}: header starts with the icon, h1 {title!r}, then the tabs ({shape['tags']})")
+    tabs = shape["tabs"] or {}
+    check(tabs.get("labels") == TAB_LABELS[lang] and tabs.get("hrefs") == [href for _, href in TABS],
+          f"{lang}, {tab}: the tabs ({tabs.get('labels')}, {tabs.get('hrefs')})")
+    check(tabs.get("active") == [dict(TABS)[tab]], f"{lang}: {tab} is the active tab ({tabs.get('active')})")
+    if phone:
+        check(tabs.get("bottom") and tabs.get("icons"), f"{lang}, {tab}: tabs with icons at the bottom ({tabs})")
+    else:
+        check(tabs.get("row") and not tabs.get("icons"), f"{lang}, {tab}: tabs in the row of the name, no icons ({tabs})")
     check(shape["icon"] == {"src": "icon.png", "loaded": True, "size": [24, 24], "row": True},
           f"{lang}: the app's icon shows, 24 px, in the row of the name ({shape['icon']})")
     check(len(kids) == 3, f"{lang}: three actions in the header ({len(kids)})")
@@ -191,14 +216,23 @@ def run(image: str, shots: bool) -> None:
             header(p, lang, width < 600)
             backgrounds[scheme] = p.evaluate("getComputedStyle(document.body).backgroundColor")
             check(p.evaluate("document.documentElement.scrollWidth <= innerWidth"), f"{lang}: nothing wider than {width} px")
+            if shots and (width, scheme) == (1200, "light"):
+                p.screenshot(path=OUT / "overview.png")
+            # Every view, by its URL; the clients last, for the list's checks
+            for tab, href in TABS[1:]:
+                p.goto(base + INGRESS + href)
+                header(p, lang, width < 600, tab)
+                check(p.evaluate("document.documentElement.scrollWidth <= innerWidth"),
+                      f"{lang}, {tab}: nothing wider than {width} px")
+                if shots and (width, scheme) == (1200, "light") and tab == "upstream":
+                    p.screenshot(path=OUT / "upstream.png")
             # The page swaps in a fresh copy in place; with the request in flight the button spins
             with p.expect_response(lambda r: "refresh=1" in r.url):
                 p.locator("#refresh").click()
             p.wait_for_function("!document.querySelector('#refresh.busy')")
-            check(p.locator("header .stamp").count() == 1 and p.url == base + INGRESS, f"{lang}: refresh stays on the page")
+            check(p.locator("header .stamp").count() == 1 and p.url == base + INGRESS + "?tab=clients",
+                  f"{lang}: refresh stays on the view")
             if shots and (width, scheme) == (1200, "light"):
-                p.screenshot(path=OUT / "overview.png")
-                p.locator("#clients").scroll_into_view_if_needed()
                 p.locator(".chip[data-show=active]").click()
                 p.locator(".card", has=p.locator("#clients")).screenshot(path=OUT / "clients.png")
                 p.locator(".chip[data-show=all]").click()
@@ -220,6 +254,32 @@ def run(image: str, shots: bool) -> None:
         p.wait_for_url(f"**/config/app/{SLUG}/config")
         check(p.url == f"{base}/config/app/{SLUG}/config", "settings open outside the frame")
         done(p, "frame")
+
+        print("==> Tabs in Home Assistant's frame")
+        p = page(1200, 760, "light", "en-US", base + "/")
+        frame = p.frame_locator("#ingress")
+        frame.locator("header h1").wait_for()
+        app = next(f for f in p.frames if f.parent_frame is not None)
+        for label, href in (("Clients", "?tab=clients"), ("Upstream", "?tab=upstream")):
+            with p.expect_event("framenavigated", predicate=lambda f: f is app):
+                frame.locator("nav.tabs > a", has_text=label).click()
+            frame.locator("nav.tabs > a.active", has_text=label).wait_for()
+            check(app.url == base + INGRESS + href, f"frame: the {label} tab opens {href} ({app.url})")
+        with p.expect_event("framenavigated", predicate=lambda f: f is app):
+            app.evaluate("setTimeout(() => location.reload(), 0)")
+        frame.locator("nav.tabs > a.active", has_text="Upstream").wait_for()
+        check(app.url == base + INGRESS + "?tab=upstream", f"frame: reload stays on the view ({app.url})")
+        with p.expect_event("framenavigated", predicate=lambda f: f is app):
+            app.evaluate("setTimeout(() => history.back(), 0)")  # the browser's back, inside the frame
+        frame.locator("nav.tabs > a.active", has_text="Clients").wait_for()
+        check(app.url == base + INGRESS + "?tab=clients", f"frame: back returns to the previous view ({app.url})")
+        with p.expect_event("framenavigated", predicate=lambda f: f is app):
+            frame.locator("nav.tabs > a", has_text="Overview").click()
+        with p.expect_event("framenavigated", predicate=lambda f: f is app):
+            frame.locator("a.state[href='?tab=clients']").click()
+        frame.locator("nav.tabs > a.active", has_text="Clients").wait_for()
+        check(app.url == base + INGRESS + "?tab=clients", "frame: the overview's client line leads to the clients")
+        done(p, "tabs")
 
         # The browser asks for English; the page follows Home Assistant's language
         # (share/ha-app/ha-lang.js): one reload when it changes, none when not

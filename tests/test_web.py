@@ -5,6 +5,7 @@ chronyc is the stub answering from tests/fixtures.
 
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -376,9 +377,40 @@ class Activity(Fixture):
         self.assertNotIn("Kein Client fragt", w.render(self.state(read=asking({"192.0.2.6": (8, 60, 6)})), "de", None))
 
     def test_note_explains_activity_and_counting(self) -> None:
-        page = w.render(self.state(), "de", None)
+        page = w.render(self.state(), "de", None, tab="clients")
         self.assertIn("weniger als drei Intervalle des Clients und 1 h zurück", page)
         self.assertIn("frühestens seit " + w.Format("de").day(NOW), page)
+
+
+class Views(Fixture):
+    def test_tabs_in_the_header(self) -> None:
+        state = self.state()
+        for tab in ("overview", "upstream", "clients"):
+            page = w.render(state, "en", None, tab=tab)
+            header = page[page.index("<header>"):page.index("</header>")]
+            self.assertRegex(header, r'^<header><img class="app-icon"[^>]*><h1>NTP server</h1><nav class="tabs">')
+            self.assertEqual(re.findall(r'<a class="[a-z]*" href="([^"]*)"', header), ["?", "?tab=upstream", "?tab=clients"])
+            self.assertEqual(re.findall(r'<a class="active" href="([^"]*)" aria-current="page">', header),
+                             ["?" if tab == "overview" else f"?tab={tab}"])
+        self.assertIn("<span>Übersicht</span>", w.render(state, "de", None))
+
+    def test_each_detail_once(self) -> None:
+        state = self.state()
+        overview, upstream, clients = (w.render(state, "en", None, tab=t) for t in ("overview", "upstream", "clients"))
+        self.assertIn('href="?tab=upstream"><svg', overview)
+        self.assertIn('href="?tab=clients"><svg', overview)
+        self.assertIn("RMS offset", upstream)
+        self.assertNotIn("RMS offset", overview + clients)
+        self.assertIn('id="clients"', clients)
+        self.assertNotIn('id="clients"', overview + upstream)
+        self.assertIn("System offset", overview)
+        self.assertNotIn("System offset", upstream + clients)
+
+    def test_tab_from_the_url(self) -> None:
+        base = Server.serve(self, set())
+        self.assertIn('id="clients"', Server.get(self, base + "/?tab=clients")[1])
+        self.assertIn('id="clients"', Server.get(self, base + "/?tab=clients&refresh=1")[1])
+        self.assertIn("Synchronized with", Server.get(self, base + "/?tab=nothing")[1])
 
 
 class Editing(Fixture):
@@ -387,7 +419,7 @@ class Editing(Fixture):
         self.assertEqual(state.change({"action": "edit", "ip": "192.0.2.6", "name": " Fridge ", "note": "behind\nthe door"}), 204)
         entry = json.loads(self.path.read_text())["clients"]["192.0.2.6"]
         self.assertEqual((entry["alias"], entry["note"], entry["name"]), ("Fridge", "behind the door", "plug.lan"))
-        page = w.render(state, "en", None)
+        page = w.render(state, "en", None, tab="clients")
         self.assertIn('data-name="fridge"', page)
         self.assertIn('<span class="sub memo" title="behind the door">behind the door</span>', page)
         self.assertIn('data-text="fridge plug.lan 192.0.2.6 behind the door"', page)
@@ -496,10 +528,13 @@ class Formatting(unittest.TestCase):
 class Page(Fixture):
     def test_status_sources_and_clients(self) -> None:
         state = self.state(table={"192.0.2.6": "plug.lan"})
-        page = w.render(state, "de", "abc_chrony_ntp")
-        self.assertIn("Synchron mit 192.53.103.108", page)
-        self.assertIn("ausgewählt", page)
-        self.assertIn("nicht erreichbar", page)
+        overview = w.render(state, "de", "abc_chrony_ntp")
+        self.assertIn("Synchron mit 192.53.103.108", overview)
+        self.assertIn("Clients: 1 aktiv, 1 inaktiv", overview)
+        upstream = w.render(state, "de", "abc_chrony_ntp", tab="upstream")
+        self.assertIn("ausgewählt", upstream)
+        self.assertIn("nicht erreichbar", upstream)
+        page = w.render(state, "de", "abc_chrony_ntp", tab="clients")
         self.assertIn('data-name="plug"', page)
         self.assertIn("vor 2 min", page)
         # 192.0.2.6 asked 2 minutes ago, 192.0.2.7 83 minutes ago
@@ -510,22 +545,22 @@ class Page(Fixture):
 
     def test_upstream_names_from_dns(self) -> None:
         state = self.state(table={"192.53.103.108": "time.example.net"})
-        page = w.render(state, "en", None)
-        self.assertIn("Synchronized with time.example.net", page)
+        self.assertIn("Synchronized with time.example.net", w.render(state, "en", None))
+        page = w.render(state, "en", None, tab="upstream")
         self.assertIn('<td title="192.53.103.108">time.example.net', page)
         self.assertIn('<td title="192.0.2.50">192.0.2.50', page)
 
     def test_client_chrony_forgot(self) -> None:
         self.state()
         gone = lambda: {**w.read_chrony(), "clients": []}  # noqa: E731
-        page = w.render(self.state(read=gone, now=NOW + 3600), "en", None)
+        page = w.render(self.state(read=gone, now=NOW + 3600), "en", None, tab="clients")
         self.assertIn("1 h 2 min ago", page)
         # Its requests and the last interval chrony knew stay from the store
         self.assertIn('data-requests="12" data-dropped="0" data-interval="8"', page)
 
     def test_names_from_dns_escaped(self) -> None:
         state = self.state(table={"192.0.2.6": '<img src=x onerror="alert(1)">'})
-        page = w.render(state, "en", None)
+        page = w.render(state, "en", None, tab="clients")
         self.assertNotIn("<img src=x", page)
         self.assertEqual(page.count("<img"), 1)  # the app's icon in the header
         self.assertIn("&lt;img", page)
@@ -549,7 +584,8 @@ class Page(Fixture):
         state = self.state()
         page = w.render(state, "de", "a1b2c3d4_chrony_ntp")
         stamp = time.strftime("%H:%M:%S", time.localtime(state.at))
-        self.assertRegex(page, '<header><img class="app-icon" src="icon.png" alt="" width="24" height="24"><h1>NTP-Server</h1><div class="actions" id="actions">'
+        self.assertRegex(page, '<header><img class="app-icon" src="icon.png" alt="" width="24" height="24"><h1>NTP-Server</h1>'
+                               '<nav class="tabs">.*</nav><div class="actions" id="actions">'
                                f'<span class="stamp opt">Stand {stamp}</span>'
                                '<a class="icon-button" href="" id="refresh" role="button" title="Aktualisieren"[^>]*>'
                                '<svg[^>]*><path[^>]*/></svg></a>'
@@ -605,9 +641,10 @@ class Page(Fixture):
     def test_chronyc_down(self) -> None:
         def fail() -> dict:
             raise subprocess.CalledProcessError(1, "chronyc")
-        page = w.render(self.state(read=fail), "en", None)
-        self.assertIn("chronyc does not answer.", page)
-        self.assertIn("No client has asked for the time yet.", page)
+        state = self.state(read=fail)
+        self.assertIn("chronyc does not answer.", w.render(state, "en", None))
+        self.assertIn("chronyc does not answer.", w.render(state, "en", None, tab="upstream"))
+        self.assertIn("No client has asked for the time yet.", w.render(state, "en", None, tab="clients"))
 
 
 class Server(Fixture):
@@ -719,7 +756,9 @@ class Server(Fixture):
                       self.get(base + "/")[1])
 
     def test_page_has_the_dialog_outside_main(self) -> None:
-        page = self.get(self.serve(set()) + "/")[1]
+        base = self.serve(set())
+        self.assertNotIn("<dialog", self.get(base + "/")[1])
+        page = self.get(base + "/?tab=clients")[1]
         self.assertRegex(page, r'</main><dialog id="edit".*</dialog><footer class="version">Chrony NTP \+ MQTT 2\.1\.0</footer></body>')
         self.assertIn(f'maxlength="{w.NOTE_MAX}"', page)
         self.assertIn('class="icon-button small edit"', page)

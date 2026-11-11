@@ -43,6 +43,7 @@ import time
 import unicodedata
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import parse_qs
 
 LOGGER = logging.getLogger("chrony_web")
 
@@ -114,6 +115,7 @@ TEXT = {
         "days": "d", "hours": "h", "minutes": "min", "seconds": "s",
         "states": {"*": "selected", "+": "combined", "-": "not combined", "?": "unreachable",
                    "x": "falseticker", "~": "too variable"},
+        "overview": "Overview", "upstream": "Upstream", "clients_summary": "{} active, {} inactive",
     },
     "de": {
         "title": "NTP-Server", "settings": "Einstellungen", "refresh": "Aktualisieren", "as_of": "Stand {}", "status": "Status", "accuracy": "Genauigkeit", "synced": "Synchron mit {}",
@@ -139,11 +141,16 @@ TEXT = {
         "chrony_down": "chronyc antwortet nicht.", "loading": "Chrony wird gelesen …", "days": "d", "hours": "h", "minutes": "min", "seconds": "s",
         "states": {"*": "ausgewählt", "+": "kombiniert", "-": "nicht kombiniert", "?": "nicht erreichbar",
                    "x": "falsche Zeit", "~": "zu schwankend"},
+        "overview": "Übersicht", "upstream": "Upstream", "clients_summary": "{} aktiv, {} inaktiv",
     },
 }
 
 # Material Design Icons (Apache 2.0), as Home Assistant draws them
 ICONS = {
+    "overview": "M19,5V7H15V5H19M9,5V11H5V5H9M19,13V19H15V13H19M9,17V19H5V17H9M21,3H13V9H21V3M11,3H3V13H11V3M21,11H13V21H21V11M11,15H3V21H11V15Z",
+    "upstream": "M13,19H14A1,1 0 0,1 15,20H22V22H15A1,1 0 0,1 14,23H10A1,1 0 0,1 9,22H2V20H9A1,1 0 0,1 10,19H11V17H4A1,1 0 0,1 3,16V12A1,1 0 0,1 4,11H20A1,1 0 0,1 21,12V16A1,1 0 0,1 20,17H13V19M4,3H20A1,1 0 0,1 21,4V8A1,1 0 0,1 20,9H4A1,1 0 0,1 3,8V4A1,1 0 0,1 4,3M9,7H10V5H9V7M9,15H10V13H9V15M5,5V7H7V5H5M5,13V15H7V13H5Z",
+    "clients": "M3 6H21V4H3C1.9 4 1 4.9 1 6V18C1 19.1 1.9 20 3 20H7V18H3V6M13 12H9V13.78C8.39 14.33 8 15.11 8 16C8 16.89 8.39 17.67 9 18.22V20H13V18.22C13.61 17.67 14 16.88 14 16S13.61 14.33 13 13.78V12M11 17.5C10.17 17.5 9.5 16.83 9.5 16S10.17 14.5 11 14.5 12.5 15.17 12.5 16 11.83 17.5 11 17.5M22 8H16C15.5 8 15 8.5 15 9V19C15 19.5 15.5 20 16 20H22C22.5 20 23 19.5 23 19V9C23 8.5 22.5 8 22 8M21 18H17V10H21V18Z",
+    "chevron": "M8.59,16.58L13.17,12L8.59,7.41L10,6L16,12L10,18L8.59,16.58Z",
     "settings": "M12,8A4,4 0 0,1 16,12A4,4 0 0,1 12,16A4,4 0 0,1 8,12A4,4 0 0,1 12,8M12,10A2,2 0 0,0 10,12A2,2 0 0,0 12,14A2,2 0 0,0 14,12A2,2 0 0,0 12,10M10,22C9.75,22 9.54,21.82 9.5,21.58L9.13,18.93C8.5,18.68 7.96,18.34 7.44,17.94L4.95,18.95C4.73,19.03 4.46,18.95 4.34,18.73L2.34,15.27C2.21,15.05 2.27,14.78 2.46,14.63L4.57,12.97L4.5,12L4.57,11L2.46,9.37C2.27,9.22 2.21,8.95 2.34,8.73L4.34,5.27C4.46,5.05 4.73,4.96 4.95,5.05L7.44,6.05C7.96,5.66 8.5,5.32 9.13,5.07L9.5,2.42C9.54,2.18 9.75,2 10,2H14C14.25,2 14.46,2.18 14.5,2.42L14.87,5.07C15.5,5.32 16.04,5.66 16.56,6.05L19.05,5.05C19.27,4.96 19.54,5.05 19.66,5.27L21.66,8.73C21.79,8.95 21.73,9.22 21.54,9.37L19.43,11L19.5,12L19.43,13L21.54,14.63C21.73,14.78 21.79,15.05 21.66,15.27L19.66,18.73C19.54,18.95 19.27,19.04 19.05,18.95L16.56,17.95C16.04,18.34 15.5,18.68 14.87,18.93L14.5,21.58C14.46,21.82 14.25,22 14,22H10M11.25,4L10.88,6.61C9.68,6.86 8.62,7.5 7.85,8.39L5.44,7.35L4.69,8.65L6.8,10.2C6.4,11.37 6.4,12.64 6.8,13.8L4.68,15.36L5.43,16.66L7.86,15.62C8.63,16.5 9.68,17.14 10.87,17.38L11.24,20H12.76L13.13,17.39C14.32,17.14 15.37,16.5 16.14,15.62L18.57,16.66L19.32,15.36L17.2,13.81C17.6,12.64 17.6,11.37 17.2,10.2L19.31,8.65L18.56,7.35L16.15,8.39C15.38,7.5 14.32,6.86 13.12,6.62L12.75,4H11.25Z",
     "ok": "M12 2C6.5 2 2 6.5 2 12S6.5 22 12 22 22 17.5 22 12 17.5 2 12 2M10 17L5 12L6.41 10.59L10 14.17L17.59 6.58L19 8L10 17Z",
     "alert": "M13,13H11V7H13M13,17H11V15H13M12,2A10,10 0 0,0 2,12A10,10 0 0,0 12,22A10,10 0 0,0 22,12A10,10 0 0,0 12,2Z",
@@ -185,6 +192,33 @@ APP_ICON_TAG = '<img class="app-icon" src="icon.png" alt="" width="24" height="2
 
 APP_STYLE = """
 header > .app-icon { flex: none; width: 24px; height: 24px; margin-right: 12px; }
+header > h1 { flex: none; }
+/* The views as tabs in the header row, like Home Assistant's own (and Network
+   Plus); on phone width a bar at the bottom with icons, as in its app */
+header > nav.tabs { display: flex; align-self: stretch; min-width: 0; margin-left: 24px; overflow-x: auto;
+  scrollbar-width: none; }
+nav.tabs > a { display: flex; align-items: center; justify-content: center; padding: 0 20px; position: relative;
+  color: var(--sidebar-text-color); font-weight: var(--ha-font-weight-medium); white-space: nowrap; opacity: .8; }
+nav.tabs > a:hover { background: var(--ha-hover); }
+nav.tabs > a.active { color: var(--primary-color); opacity: 1; }
+nav.tabs > a.active::after { content: ""; position: absolute; left: 0; right: 0; bottom: 0; height: 2px;
+  background: var(--primary-color); }
+nav.tabs > a > svg { display: none; }
+@media (max-width: 600px) {
+  header > nav.tabs { position: fixed; left: 0; right: 0; bottom: 0; z-index: 2; margin: 0; overflow: hidden;
+    background: var(--sidebar-background-color); border-top: 1px solid var(--divider-color);
+    padding-bottom: env(safe-area-inset-bottom); }
+  nav.tabs > a { flex: 1 1 0; flex-direction: column; gap: 2px; height: 56px; padding: 6px 2px 4px; min-width: 0;
+    font-size: 11px; }
+  nav.tabs > a > span { max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+  nav.tabs > a > svg { display: block; padding: 2px 12px; border-radius: 14px; box-sizing: content-box; }
+  nav.tabs > a.active > svg { background: color-mix(in srgb, var(--primary-color) 15%, transparent); }
+  nav.tabs > a.active::after { display: none; }
+  body:has(> header > nav.tabs) { padding-bottom: calc(56px + env(safe-area-inset-bottom)); }
+}
+a.state { margin: 0 -8px 8px; padding: 4px 8px; border-radius: 8px; }
+a.state:hover { background: var(--ha-hover); }
+a.state > svg.go { margin-left: auto; color: var(--secondary-text-color); }
 .dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; background: var(--disabled-text-color); }
 .dot.on { background: var(--success-color); }
 .sub.memo { max-width: 320px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
@@ -837,17 +871,23 @@ def card(title: str | None, content: str, padded: bool = True, attrs: str = "") 
 def status_card(f: Format, chrony: dict, clients: Clients, now: float) -> str:
     t, tr = f.t, chrony["tracking"]
     reference = tr.get("host") or tr["refname"] or tr["refid"]
+    go = icon("chevron", "go")
     if not sync_problem(tr):
-        state = f'<div class="state ok">{icon("ok")}{esc(t["synced"].format(reference))}</div>'
+        state = f'<a class="state ok" href="?tab=upstream">{icon("ok")}{esc(t["synced"].format(reference))}{go}</a>'
     else:
         # Before its first sync chrony reports stratum 0
         unsynced = tr["stratum"] >= 16 or tr["stratum"] == 0 or tr["leap"] == "Not synchronised"
         reason = (t["local"] if tr["refid"] == LOCAL_CLOCK else
                   t["unsynced"] if unsynced else t["leap"].format(tr["leap"]))
-        state = f'<div class="state bad">{icon("alert")}{esc(reason)}</div>'
+        state = f'<a class="state bad" href="?tab=upstream">{icon("alert")}{esc(reason)}{go}</a>'
     if clients.requests_missing(now):
         last = max(e["last_seen"] for e in clients.data.values())
-        state += f'<div class="state bad">{icon("alert")}{esc(t["missing"].format(f.ago(now - last)))}</div>'
+        state += (f'<a class="state bad" href="?tab=clients">{icon("alert")}'
+                  f'{esc(t["missing"].format(f.ago(now - last)))}{go}</a>')
+    else:
+        active = sum(Clients.active(e, now) for e in clients.data.values())
+        state += (f'<a class="state muted" href="?tab=clients">{icon("clients")}{esc(t["clients"])}: '
+                  f'{esc(t["clients_summary"].format(active, len(clients.data) - active))}{go}</a>')
     since = t["since"].format(f.day(clients.totals["since"]))
     last_sync = (f'{esc(f.ago(now - tr["reftime"]))}<span class="sub">{esc(f.when(tr["reftime"]))}</span>'
                  if tr["reftime"] else t["unknown"])
@@ -976,18 +1016,39 @@ def edit_dialog(t: dict) -> str:
             f'<button type="submit" class="button filled">{esc(t["save"])}</button></div></form></dialog>')
 
 
-def render(state: State, lang: str, slug: str | None, now: float | None = None, version: str | None = None) -> str:
+# The views of the page, each a tab in the header: (id, label)
+TABS = (("overview", "overview"), ("upstream", "upstream"), ("clients", "clients"))
+
+
+def tab_of(query: dict[str, list[str]]) -> str:
+    tab = (query.get("tab") or [""])[0]
+    return tab if tab in dict(TABS) else "overview"
+
+
+def tabs(t: dict, active: str) -> str:
+    links = "".join(f'<a class="{"active" if tab == active else ""}" href="{"?" if tab == "overview" else f"?tab={tab}"}"'
+                    f'{' aria-current="page"' if tab == active else ""}>{icon(tab)}<span>{esc(t[label])}</span></a>'
+                    for tab, label in TABS)
+    return f'<nav class="tabs">{links}</nav>'
+
+
+def render(state: State, lang: str, slug: str | None, now: float | None = None, version: str | None = None,
+           tab: str = "overview") -> str:
+    """One view: the overview sums up, Upstream and Clients hold the details."""
     f = Format(lang)
     t = f.t
     now = state._clock() if now is None else now
     with state.lock:
         chrony = state.chrony
-        if chrony is None:
+        if tab == "clients":
+            body = clients_card(f, state, now)
+        elif chrony is None:
             body = card(t["status"], f'<p class="muted">{esc(t["loading"])}</p>' if not state.at else
                         f'<div class="state bad">{icon("alert")}{esc(t["chrony_down"])}</div>')
+        elif tab == "upstream":
+            body = f'<div class="cards">{sources_card(f, chrony)}{accuracy_card(f, chrony)}</div>'
         else:
-            body = f'<div class="cards">{status_card(f, chrony, state.clients, now)}<div>{sources_card(f, chrony)}{accuracy_card(f, chrony)}</div></div>'
-        body += clients_card(f, state, now)
+            body = f'<div class="cards">{status_card(f, chrony, state.clients, now)}</div>'
     # The same header on every page of the apps: when the data were read (the
     # time of the request before the first read), refresh, and the settings,
     # which are Home Assistant's own page, outside the ingress frame
@@ -1003,9 +1064,9 @@ def render(state: State, lang: str, slug: str | None, now: float | None = None, 
     return (f'<!doctype html><html lang="{lang}"><head><meta charset="utf-8">'
             '<meta name="viewport" content="width=device-width, initial-scale=1">'
             f"<title>{esc(t['title'])}</title><style>{stylesheet()}</style><script>{SCRIPT}</script></head><body>"
-            f'<header>{APP_ICON_TAG}<h1>{esc(t["title"])}</h1><div class="actions" id="actions">{actions}</div></header>'
+            f'<header>{APP_ICON_TAG}<h1>{esc(t["title"])}</h1>{tabs(t, tab)}<div class="actions" id="actions">{actions}</div></header>'
             # The dialog stays outside main, which the script swaps for a fresh copy
-            f'<main>{body}</main>{edit_dialog(t)}<footer class="version">{esc(about)}</footer></body></html>')
+            f'<main>{body}</main>{edit_dialog(t) if tab == "clients" else ""}<footer class="version">{esc(about)}</footer></body></html>')
 
 
 # --- The server ------------------------------------------------------------------------------
@@ -1051,7 +1112,8 @@ def handler(state: State, slug: str | None, allowed: set[str], version: str | No
             # The refresh button asks for a read of chrony at once
             if "refresh=1" in self.path.partition("?")[2].split("&"):
                 state.refresh()
-            page = render(state, lang_of(self.headers.get("Cookie"), self.headers.get("Accept-Language")), slug, version=version)
+            page = render(state, lang_of(self.headers.get("Cookie"), self.headers.get("Accept-Language")), slug,
+                          version=version, tab=tab_of(parse_qs(self.path.partition("?")[2])))
             self._send(200, "text/html; charset=utf-8", page.encode())
 
         def do_POST(self) -> None:  # noqa: N802
