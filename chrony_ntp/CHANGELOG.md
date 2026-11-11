@@ -11,6 +11,7 @@ All notable changes to this app are documented here. The format follows [Keep a 
 - chrony keeps the frequency error of the host clock in the app's data folder (`/data/chrony/drift`), so offset and skew settle soon after a restart
 - chrony answers each client at most about once in two seconds on average (bursts of 16); floods from one address count as dropped requests
 - Requires Home Assistant 2026.11 or later
+- The base image `hassio-addons/base:21.0.11` is pinned by digest; Dependabot proposes updates of the base image
 
 ### Changed
 

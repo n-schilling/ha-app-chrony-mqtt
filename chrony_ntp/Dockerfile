@@ -1,6 +1,7 @@
-# Multi-arch image; without a build.yaml the Supervisor passes no BUILD_FROM.
-# Dependabot keeps the tag current.
-FROM ghcr.io/hassio-addons/base:21.0.11
+# Multi-arch image, pinned by version and digest, so a moved tag cannot change
+# it unnoticed; Dependabot proposes updates of both. Without a build.yaml the
+# Supervisor passes no BUILD_FROM.
+FROM ghcr.io/hassio-addons/base:21.0.11@sha256:79fd58d9d7f2820e8b2e7d2b11a24e22b96ae7a48569af3372183592a1b22974
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
