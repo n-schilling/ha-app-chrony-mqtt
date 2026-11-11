@@ -57,6 +57,7 @@ version=$(sed -n 's/^version: *"\{0,1\}\([^"]*\)"\{0,1\} *$/\1/p' chrony_ntp/con
 shell_scripts=(
     chrony_ntp/rootfs/etc/s6-overlay/s6-rc.d/*/run
     chrony_ntp/rootfs/usr/local/lib/mqtt-device.sh
+    chrony_ntp/rootfs/usr/local/bin/chrony-mqtt-kpi
     chrony_ntp/rootfs/etc/s6-overlay/s6-rc.d/chrony/finish
     scripts/check.sh
     tests/test_app.sh tests/test_broker.sh tests/stubs/chronyc tests/stubs/mosquitto_*

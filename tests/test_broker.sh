@@ -7,7 +7,7 @@
 # chronyc is a stub; mosquitto_pub and mosquitto_sub are the real ones.
 set -u
 
-readonly RUN=/etc/s6-overlay/s6-rc.d/mqtt-kpi/run
+readonly RUN=/usr/local/bin/chrony-mqtt-kpi
 readonly DEVICE=homeassistant/device/chrony_ntp/config
 readonly AVAIL=chrony/chrony_ntp/availability
 WORK=$(mktemp -d)

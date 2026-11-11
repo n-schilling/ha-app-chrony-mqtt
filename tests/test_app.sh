@@ -7,6 +7,8 @@
 set -u
 
 readonly S6=/etc/s6-overlay/s6-rc.d
+# The sensor publisher; its s6 service only starts it as chronyd's user
+readonly KPI_SCRIPT=/usr/local/bin/chrony-mqtt-kpi
 readonly CONF=/etc/chrony/chrony.conf
 WORK=$(mktemp -d)
 FAILED=0
@@ -58,6 +60,8 @@ expect 'steps only in the first updates' "$(grep '^makestep' "${CONF}")" 'makest
 expect 'rate limit for clients' "$(grep '^ratelimit' "${CONF}")" 'ratelimit interval 1 burst 16'
 expect 'bounded client log' "$(grep -c '^clientloglimit ' "${CONF}")" 1
 expect 'no initstepslew' "$(grep -c '^initstepslew' "${CONF}")" 0
+expect 'folders of the page and the publisher belong to chronyd' \
+    "$(stat -c '%U %a' /data/web /run/chrony-app | tr '\n' '|')" 'chrony 700|chrony 700|'
 expect 'chronyd accepts the pool configuration' "$(chronyd -p -f "${CONF}" > /dev/null 2>&1; echo $?)" 0
 
 init_config '{"mode":"server","ntp_pool":"","ntp_server":["a.example","b.example","c.example"]}'
@@ -67,6 +71,22 @@ expect 'chronyd accepts the server configuration' "$(chronyd -p -f "${CONF}" > /
 
 init_config '{"mode":"pool","ntp_pool":"","ntp_server":[]}'
 expect 'pool mode without a pool stops the app' "$(grep -c 'mode is pool, but ntp_pool is empty' "${WORK}/log")" 1
+
+echo '# Store of 2.1.0 and earlier'
+rm -rf /data/web
+printf '{"clients":{}}' > /data/clients.json
+init_config '{"mode":"pool","ntp_pool":"time.example.net","ntp_server":[]}'
+expect 'client store moved to /data/web' "$(cat /data/web/clients.json; [[ -e /data/clients.json ]] && echo ' left behind')" '{"clients":{}}'
+expect 'moved store belongs to chronyd' "$(stat -c '%U' /data/web/clients.json)" chrony
+printf '{"clients":{"old":1}}' > /data/clients.json
+init_config '{"mode":"pool","ntp_pool":"time.example.net","ntp_server":[]}'
+expect 'an existing store is not overwritten' "$(cat /data/web/clients.json)" '{"clients":{}}'
+rm -f /data/clients.json
+
+echo '# Services without root'
+expect 'web page runs as chronyd' "$(grep -c '^exec s6-setuidgid chrony python3 ' "${S6}/web/run")" 1
+expect 'publisher runs as chronyd' "$(grep -c 's6-setuidgid chrony /usr/local/bin/chrony-mqtt-kpi$' "${S6}/mqtt-kpi/run")" 1
+expect 'chronyd can start the publisher' "$(su -s /bin/sh chrony -c "test -x ${KPI_SCRIPT}"; echo $?)" 0
 
 echo '# Allowed networks and offline fallback'
 POOL='"mode":"pool","ntp_pool":"pool.ntp.org","ntp_server":[]'
@@ -94,7 +114,7 @@ KPI='{"mqtt_interval":300,"discovery_prefix":"homeassistant"}'
 echo '# Problem sensors'
 : > "${PUBLISHED}"
 web_status false
-TRACKING=/tests/fixtures/tracking.csv run_service "${KPI}" "${S6}/mqtt-kpi/run"
+TRACKING=/tests/fixtures/tracking.csv run_service "${KPI}" "${KPI_SCRIPT}"
 expect 'no sync problem' "$(last sync_problem)" OFF
 expect 'requests arrive' "$(last requests_missing)" OFF
 expect 'states of the sensors before 2.0.0 cleared' \
@@ -121,7 +141,7 @@ echo '# Broker credentials'
 expect 'broker and credentials in the option file' "$(cat "${MQTT_CONFIG}/mosquitto_pub")" \
     $'-h core-mosquitto\n-p 1883\n-u addons\n-P secret'
 expect 'same for mosquitto_sub' "$(diff -q "${MQTT_CONFIG}/mosquitto_pub" "${MQTT_CONFIG}/mosquitto_sub" > /dev/null; echo $?)" 0
-expect 'readable by root only' "$(stat -c '%a' "${MQTT_CONFIG}/mosquitto_pub" "${MQTT_CONFIG}")" $'600\n700'
+expect 'readable by the app user only' "$(stat -c '%a' "${MQTT_CONFIG}/mosquitto_pub" "${MQTT_CONFIG}")" $'600\n700'
 expect 'no password on a command line' "$(grep -c secret "${PUBLISHED}.sub")" 0
 
 echo '# Availability'
@@ -133,21 +153,21 @@ expect 'held connection with a retained last will' \
 echo '# Requests missing'
 : > "${PUBLISHED}"
 web_status true
-TRACKING=/tests/fixtures/tracking.csv run_service "${KPI}" "${S6}/mqtt-kpi/run"
+TRACKING=/tests/fixtures/tracking.csv run_service "${KPI}" "${KPI_SCRIPT}"
 expect 'requests missing' "$(last requests_missing)" ON
 : > "${PUBLISHED}"
 web_status true 300
-TRACKING=/tests/fixtures/tracking.csv run_service "${KPI}" "${S6}/mqtt-kpi/run"
+TRACKING=/tests/fixtures/tracking.csv run_service "${KPI}" "${KPI_SCRIPT}"
 expect 'stale status from the web page: unknown' "$(last requests_missing)" None
 : > "${PUBLISHED}"
 rm -f "${CHRONY_WEB_STATUS}"
-TRACKING=/tests/fixtures/tracking.csv run_service "${KPI}" "${S6}/mqtt-kpi/run"
+TRACKING=/tests/fixtures/tracking.csv run_service "${KPI}" "${KPI_SCRIPT}"
 expect 'no status from the web page: unknown' "$(last requests_missing)" None
 web_status false
 
 echo '# Not synchronised'
 : > "${PUBLISHED}"
-TRACKING=/tests/fixtures/tracking-unsynced.csv run_service "${KPI}" "${S6}/mqtt-kpi/run"
+TRACKING=/tests/fixtures/tracking-unsynced.csv run_service "${KPI}" "${KPI_SCRIPT}"
 expect 'waits for a sync, then publishes anyway' "$(grep -c 'not synchronized after two minutes' "${WORK}/log")" 1
 expect 'sync problem at stratum 16' "$(last sync_problem)" ON
 
@@ -160,7 +180,7 @@ printf '%s\t%s\n' \
     homeassistant/device/chrony_ntp/config '{"components":{"stratum":{"platform":"sensor"},"old":{"platform":"sensor","unique_id":"x"}}}' \
     > "${RETAINED}"
 : > "${PUBLISHED}"
-TRACKING=/tests/fixtures/tracking.csv run_service "${KPI}" "${S6}/mqtt-kpi/run"
+TRACKING=/tests/fixtures/tracking.csv run_service "${KPI}" "${KPI_SCRIPT}"
 expect 'both old topics migrated' "$(grep -c '{"migrate_discovery":true}' "${PUBLISHED}")" 2
 expect 'old topics cleared after the device message' \
     "$(last_topic homeassistant/sensor/chrony_ntp/stratum/config)|$(last_topic homeassistant/binary_sensor/chrony_ntp/sync_problem/config)" '|'
@@ -174,7 +194,7 @@ expect 'then left out' "$(dev | jq -c '.components | has("old")')" false
 echo '# Broker away'
 # Only the states fail; discovery goes through
 : > "${PUBLISHED}"; rm -f "${PUBLISHED}.calls"
-PUB_FAIL=999 ROUNDS=3 TRACKING=/tests/fixtures/tracking.csv run_service "${KPI}" "${S6}/mqtt-kpi/run"
+PUB_FAIL=999 ROUNDS=3 TRACKING=/tests/fixtures/tracking.csv run_service "${KPI}" "${KPI_SCRIPT}"
 expect 'no state published' "$(grep -c '^chrony/' "${PUBLISHED}")" 0
 expect 'one warning for the whole outage, with the reason' \
     "$(grep -c 'MQTT broker not reachable (Error: Connection refused), retrying every interval' "${WORK}/log")" 1
@@ -184,7 +204,7 @@ expect 'a round stops at its first failed message (11 cleared old states + 3 rou
 echo '# Broker back'
 : > "${PUBLISHED}"; rm -f "${PUBLISHED}.calls"
 # The 11 old states cleared at the start, then the first round fail
-PUB_FAIL=12 ROUNDS=2 TRACKING=/tests/fixtures/tracking.csv run_service "${KPI}" "${S6}/mqtt-kpi/run"
+PUB_FAIL=12 ROUNDS=2 TRACKING=/tests/fixtures/tracking.csv run_service "${KPI}" "${KPI_SCRIPT}"
 expect 'warning while away' "$(grep -c 'MQTT broker not reachable' "${WORK}/log")" 1
 expect 'back in the log' "$(grep -c 'MQTT broker answers again' "${WORK}/log")" 1
 expect 'states published again' "$(last sync_problem)" OFF
@@ -192,7 +212,7 @@ rm -f "${PUBLISHED}.calls"
 
 echo '# Broker not up for the discovery'
 : > "${PUBLISHED}"; rm -f "${PUBLISHED}.dcalls"
-DISC_FAIL=1 ROUNDS=2 TRACKING=/tests/fixtures/tracking.csv run_service "${KPI}" "${S6}/mqtt-kpi/run"
+DISC_FAIL=1 ROUNDS=2 TRACKING=/tests/fixtures/tracking.csv run_service "${KPI}" "${KPI_SCRIPT}"
 expect 'device announced with the next round' "$(grep -c "^${DEVICE}	" "${PUBLISHED}")" 1
 expect 'announced once it went through' "$(grep -c 'Device announced' "${WORK}/log")" 1
 expect 'states published in both rounds' "$(grep -c '^chrony/chrony_ntp/sync_problem	' "${PUBLISHED}")" 2
@@ -201,7 +221,7 @@ rm -f "${PUBLISHED}.dcalls"
 
 echo '# Serving the local clock'
 : > "${PUBLISHED}"
-TRACKING=/tests/fixtures/tracking-local.csv run_service "${KPI}" "${S6}/mqtt-kpi/run"
+TRACKING=/tests/fixtures/tracking-local.csv run_service "${KPI}" "${KPI_SCRIPT}"
 expect 'local clock counts as a sync problem' "$(last sync_problem)" ON
 
 if (( FAILED )); then

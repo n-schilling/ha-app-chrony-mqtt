@@ -1,9 +1,10 @@
 #!/command/with-contenv bashio
 # shellcheck shell=bash
 # ==============================================================================
-# The web page behind Home Assistant's ingress
+# The web page behind Home Assistant's ingress, as chronyd's user: it reads
+# chronyc, whose command socket admits only that user and root
 # ==============================================================================
 bashio::log.info 'Starting the web page'
 LOG_LEVEL=$(bashio::config 'log_level' 'info')
 export LOG_LEVEL
-exec python3 /usr/local/lib/chrony_web.py
+exec s6-setuidgid chrony python3 /usr/local/lib/chrony_web.py

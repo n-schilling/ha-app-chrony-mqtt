@@ -6,7 +6,7 @@ chrony keeps its counters and client log in memory only, so a restart of the
 app starts its request counters at zero and forgets every client until it
 asks again; some ask once a day. The page therefore keeps the request totals,
 of the server and of each client, when it first and last saw each client and
-its request interval in /data, and lists clients chrony no longer knows, until
+its request interval in /data/web, and lists clients chrony no longer knows, until
 they have been away for FORGET_AFTER. A client counts as active while its last
 request is less than three of its intervals and GRACE ago. A name and a note
 given to a client on the page are kept with it, and such a client stays until
@@ -50,8 +50,8 @@ PORT = 8099              # the Supervisor's default ingress port
 # The Supervisor's ingress proxy; nothing else may talk to the page
 INGRESS_PEER = "172.30.32.2"
 APP_NAME = "Chrony NTP + MQTT"
-STORE = Path("/data/clients.json")
-STATUS = Path("/run/chrony-web.json")  # read by the key figure publisher
+STORE = Path("/data/web/clients.json")
+STATUS = Path("/run/chrony-app/status.json")  # read by the key figure publisher
 PIDFILE = Path("/run/chrony/chronyd.pid")
 COUNTERS = ("requests", "dropped")
 POLL = 15                # seconds between two reads of chronyc

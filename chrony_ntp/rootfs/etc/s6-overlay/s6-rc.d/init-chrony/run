@@ -15,6 +15,18 @@ fi
 cp "${CHRONY_BASE}" "${CHRONY_CONF}"
 # The drift file is written by chronyd after it gave up root
 install -d -o chrony -g chrony -m 0750 /data/chrony
+# The web page and the sensor publisher run as chronyd's user as well: the
+# page keeps its clients in /data/web; the status for the sensors, the MQTT
+# client options and bashio's cache go to /run/chrony-app
+install -d -o chrony -g chrony -m 0700 /data/web /run/chrony-app
+# Up to 2.1.0 the page kept its clients in /data, as root
+for file in clients.json clients.json.broken; do
+    if [[ -f "/data/${file}" && ! -e "/data/web/${file}" ]]; then
+        mv "/data/${file}" "/data/web/${file}"
+        chown chrony:chrony "/data/web/${file}"
+        bashio::log.info "Moved ${file} to /data/web"
+    fi
+done
 
 mode=$(bashio::config 'mode')
 bashio::log.info "NTP mode: ${mode}"
