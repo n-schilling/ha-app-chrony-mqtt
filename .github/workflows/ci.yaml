@@ -105,9 +105,11 @@ jobs:
         with:
           python-version: "3.14"
       - name: Browser
+        # The runner's Google Chrome; Playwright's own Chromium only without it
+        # (Playwright 1.58 cannot install it on Ubuntu 26.04)
         run: |
           pip install playwright==1.58.0
-          python -m playwright install --with-deps chromium
+          google-chrome --version || python -m playwright install --with-deps chromium
       - name: Check the page
         run: python scripts/screenshots.py --check --image chrony-mqtt:test
 
