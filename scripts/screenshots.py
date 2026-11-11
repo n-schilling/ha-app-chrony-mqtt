@@ -1,139 +1,236 @@
-"""Takes the screenshots in docs/screenshots: the web page with made-up data,
-served from the repository's chrony_web.py on 127.0.0.1 and taken with a
-headless browser.
+"""The Page check, and the screenshots in docs/screenshots.
 
-    uv run --with playwright==1.58.0 python scripts/screenshots.py
+Starts the built image twice in a throwaway Docker network: once as the app,
+its page on made-up data (tests/page/demo.py, host name a1b2c3d4-chrony-ntp,
+so the slug is a1b2c3d4_chrony_ntp), once as a stand-in for Home Assistant at
+the ingress proxy's address 172.30.32.2 (tests/page/ingress.py), which passes
+the page on under /api/hassio_ingress/<token>/ and holds it in a frame. A
+headless browser then opens the page as Home Assistant's ingress would and
+checks, in light, dark and at phone width, in English and German:
 
-Uses the installed Google Chrome, else Playwright's Chromium
-(`uv run --with playwright==1.58.0 playwright install chromium` once).
-Every name, address and number on the pictures is made up; the addresses are
-from the ranges reserved for documentation.
+- the header (STANDARD.md, section 7): the name, then the stamp "As of
+  HH:MM:SS", the refresh button and the settings button, which leads to
+  /config/app/a1b2c3d4_chrony_ntp/config outside the frame (target _top);
+- the version line "Chrony NTP + MQTT <version>" as the last element of body;
+- no console errors, no failed scripts and no Content Security Policy violations;
+- refresh, the client list's filter and the edit dialog work, and nothing is
+  wider than a phone.
+
+Then it takes the screenshots, unless --check is given.
+
+    scripts/screenshots.py [--check] [--image chrony-mqtt:check] [--build]
+    uv run --with playwright==1.58.0 python scripts/screenshots.py --build
+
+--build builds the image first (with the version from config.yaml). Uses the
+installed Google Chrome, else Playwright's Chromium (`playwright install
+chromium` once). Every name, address and number on the pictures is made up;
+the addresses are from the ranges reserved for documentation.
 """
 
 from __future__ import annotations
 
-import json
-import os
+import argparse
 import re
+import subprocess
 import sys
-import tempfile
-import threading
 import time
+import urllib.request
 from pathlib import Path
 
-from playwright.sync_api import Error, sync_playwright
+from playwright.sync_api import Error, Page, sync_playwright
 
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "docs/screenshots"
-sys.path.insert(0, str(ROOT / "chrony_ntp/rootfs/usr/local/lib"))
-os.environ["TZ"] = "Europe/Berlin"
-time.tzset()
-
-import chrony_web as w  # noqa: E402
-
-NOW = 1_794_312_000.0  # 10.11.2026, 13:00
-DAY = 86400
 VERSION = re.search(r'^version: "?([^"\n]+)"?$', (ROOT / "chrony_ntp/config.yaml").read_text(), re.M)[1]
+NAME = "Chrony NTP + MQTT"
+HOST = "a1b2c3d4-chrony-ntp"
+SLUG = "a1b2c3d4_chrony_ntp"
+INGRESS = "/api/hassio_ingress/demo-token/"
+NET, APP, PROXY = "chrony-page-check", "chrony-page-check-app", "chrony-page-check-ingress"
+TEXTS = {"en-US": ("NTP server", "As of", "Refresh", "Settings"),
+         "de-DE": ("NTP-Server", "Stand", "Aktualisieren", "Einstellungen")}
+# Collects Content Security Policy violations, which reach no console
+WATCH_CSP = """window.__csp = [];
+document.addEventListener("securitypolicyviolation", (e) => window.__csp.push(e.violatedDirective + " " + e.blockedURI));"""
 
-# address: (reverse DNS name, interval log2, seconds since the last request,
-#           requests, dropped, days since first seen, name given, note)
-CLIENTS = {
-    "192.0.2.11": ("plug-kitchen.lan", 11, 840, 1630, 0, 41, "", ""),
-    "192.0.2.12": ("plug-washer.lan", 11, 1500, 1622, 0, 41, "Washing machine plug", ""),
-    "192.0.2.14": ("thermostat-hall.lan", 10, 400, 3310, 2, 41, "", ""),
-    "192.0.2.21": ("speaker-living.lan", 12, 2900, 812, 0, 38, "", ""),
-    "192.0.2.22": ("speaker-bath.lan", 12, 3300, 798, 0, 38, "", ""),
-    "192.0.2.31": ("purifier-bedroom.lan", 9, 200, 6620, 0, 30, "Air purifier bedroom",
-                   "Firmware asks pool.ntp.org, redirected on the router"),
-    "192.0.2.40": ("", 16, 52000, 39, 0, 41, "Wall display", "Asks about once a day"),
-    "192.0.2.52": ("camera-garden.lan", 10, 700, 3405, 0, 27, "", ""),
-    "192.0.2.53": ("camera-door.lan", 10, 650, 3398, 0, 27, "", ""),
-    "198.51.100.7": ("laptop.lan", 10, 9 * 3600, 260, 0, 12, "", ""),
-    "2001:db8::17": ("", 8, 30000, 512, 0, 3, "", ""),
-}
-SOURCES = [("*", "192.0.2.123", 1, 10, 0o377, 380, 0.000021, 0.000094),
-           ("+", "198.51.100.123", 1, 10, 0o377, 410, -0.000134, 0.000201),
-           ("?", "203.0.113.123", 0, 6, 0, None, 0.0, 0.0)]
-NAMES = {"192.0.2.123": "ntp1.example.net", "198.51.100.123": "ntp2.example.net",
-         **{ip: c[0] for ip, c in CLIENTS.items() if c[0]}}
+problems: list[str] = []
 
 
-def read() -> dict:
-    return {
-        "tracking": {"refid": "C000027B", "refname": "192.0.2.123", "stratum": 2, "reftime": NOW - 380,
-                     "offset": 0.000018, "rms": 0.000043, "frequency": -12.407, "skew": 0.021,
-                     "root_delay": 0.004211, "root_dispersion": 0.000356, "update_interval": 1031.6,
-                     "leap": "Normal"},
-        "sources": [{"mode": "^", "state": st, "name": name, "stratum": stratum, "poll": poll, "reach": reach,
-                     "last_rx": last, "offset": offset, "error": error}
-                    for st, name, stratum, poll, reach, last, offset, error in SOURCES],
-        "requests": 4211, "dropped": 2, "run": "demo",
-        "clients": [{"ip": ip, "requests": c[3] % 300, "dropped": 0, "interval": c[1], "last": c[2]}
-                    for ip, c in CLIENTS.items() if c[2] < 6 * 3600],
-    }
+def check(ok: bool, what: str) -> None:
+    print(("    ok: " if ok else "    FAILED: ") + what)
+    if not ok:
+        problems.append(what)
 
 
-def store(path: Path) -> None:
-    """The store as the page keeps it after weeks of running."""
-    clients = {}
-    for ip, (name, interval, last, requests, dropped, days, alias, note) in CLIENTS.items():
-        entry = {"first_seen": round(NOW - days * DAY), "last_seen": round(NOW - last), "name": name,
-                 "interval": interval, "base_requests": requests - requests % 300, "base_dropped": dropped,
-                 "requests": requests % 300, "dropped": 0}
-        if alias:
-            entry["alias"] = alias
-        if note:
-            entry["note"] = note
-        clients[ip] = entry
-    totals = {"since": round(NOW - 41 * DAY), "run": "demo", "base_requests": 21890, "base_dropped": 5,
-              "requests": 4211, "dropped": 2}
-    path.write_text(json.dumps({"clients": clients, "totals": totals, "forgotten": {}}))
+def docker(*args: str, check_: bool = True) -> str:
+    return subprocess.run(["docker", *args], check=check_, capture_output=True, text=True).stdout.strip()
 
 
-def serve(tmp: Path) -> str:
-    path = tmp / "clients.json"
-    store(path)
-    state = w.State(w.Clients(path), w.Names(resolve=lambda ip: NAMES.get(ip, "")), read=read, clock=lambda: NOW)
-    state.refresh()
-    server = w.Server(("127.0.0.1", 0), w.handler(state, "a1b2c3d4_chrony_ntp", set(), VERSION))
-    threading.Thread(target=server.serve_forever, daemon=True).start()
-    return f"http://127.0.0.1:{server.server_address[1]}/"
+def cleanup() -> None:
+    docker("rm", "-f", APP, PROXY, check_=False)
+    docker("network", "rm", NET, check_=False)
 
 
-def main() -> None:
-    OUT.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory() as tmp, sync_playwright() as pw:
-        url = serve(Path(tmp))
+def start(image: str) -> str:
+    """The app and the ingress stand-in; the address of the stand-in on this machine."""
+    cleanup()
+    # Another app's Page check on this machine may hold the subnet for a while
+    for _ in range(100):
+        made = subprocess.run(["docker", "network", "create", "--subnet", "172.30.32.0/23", NET],
+                              capture_output=True, text=True)
+        if made.returncode == 0:
+            break
+        if "overlaps" not in made.stderr:
+            raise SystemExit(made.stderr)
+        print("    waiting for 172.30.32.0/23, in use by another network")
+        time.sleep(3)
+    else:
+        raise SystemExit("172.30.32.0/23 stays in use by another Docker network")
+    tests = f"{ROOT / 'tests'}:/tests:ro"
+    docker("run", "-d", "--name", APP, "--network", NET, "--ip", "172.30.32.10", "--hostname", HOST,
+           "-e", "TZ=Europe/Berlin", "-v", tests, "--entrypoint", "python3", image, "/tests/page/demo.py")
+    docker("run", "-d", "--name", PROXY, "--network", NET, "--ip", "172.30.32.2", "-p", "127.0.0.1::8080",
+           "-v", tests, "--entrypoint", "python3", image, "/tests/page/ingress.py", "http://172.30.32.10:8099")
+    port = docker("port", PROXY, "8080/tcp").splitlines()[0].rsplit(":", 1)[1]
+    base = f"http://127.0.0.1:{port}"
+    for _ in range(60):
+        try:
+            with urllib.request.urlopen(base + INGRESS, timeout=2) as answer:
+                # Ready once the first read of chronyc and the name lookups are in
+                if answer.status == 200 and b"purifier-bedroom.lan" in answer.read():
+                    return base
+        except OSError:
+            pass
+        time.sleep(1)
+    print(docker("logs", APP, check_=False))
+    raise SystemExit("The page did not come up")
+
+
+def header(p: Page, lang: str, phone: bool) -> None:
+    title, as_of, refresh, settings = TEXTS[lang]
+    shape = p.evaluate("""() => {
+      const h = document.querySelector("body > header");
+      const a = h && h.querySelector(":scope > .actions");
+      return h && {
+        first: h.firstElementChild.outerHTML.slice(0, 4), h1: h.querySelector(":scope > h1")?.textContent,
+        kids: a ? [...a.children].map((e) => ({ tag: e.tagName, id: e.id, cls: e.className, role: e.getAttribute("role"),
+          href: e.getAttribute("href"), target: e.getAttribute("target"), title: e.title, text: e.textContent,
+          shown: e.offsetParent !== null, icon: !!e.querySelector("svg path") })) : [],
+        last: document.body.lastElementChild.outerHTML,
+      };
+    }""")
+    check(shape is not None, f"{lang}: header")
+    if shape is None:
+        return
+    kids = shape["kids"]
+    check(shape["first"] == "<h1>" and shape["h1"] == title, f"{lang}: header starts with h1 {title!r}")
+    check(len(kids) == 3, f"{lang}: three actions in the header ({len(kids)})")
+    if len(kids) == 3:
+        stamp, again, gear = kids
+        check(stamp["tag"] == "SPAN" and "stamp" in stamp["cls"].split() and "opt" in stamp["cls"].split()
+              and re.fullmatch(rf"{as_of} \d\d:\d\d:\d\d", stamp["text"]) is not None,
+              f"{lang}: stamp {stamp['text']!r}")
+        check(stamp["shown"] != phone, f"{lang}: stamp {'hidden' if phone else 'shown'} at this width")
+        check(again["tag"] == "A" and again["id"] == "refresh" and again["href"] == "" and again["role"] == "button"
+              and again["title"] == refresh and again["icon"], f"{lang}: refresh button")
+        check(gear["tag"] == "A" and gear["href"] == f"/config/app/{SLUG}/config" and gear["target"] == "_top"
+              and gear["title"] == settings and gear["icon"], f"{lang}: settings button ({gear['href']})")
+    check(shape["last"] == f'<footer class="version">{NAME} {VERSION}</footer>', f"{lang}: version line last")
+
+
+def run(image: str, shots: bool) -> None:
+    base = start(image)
+    with sync_playwright() as pw:
         try:
             browser = pw.chromium.launch(channel="chrome")
         except Error:
             browser = pw.chromium.launch()
 
-        def page(width: int, height: int, scheme: str = "light", lang: str = "en-US"):
+        def page(width: int, height: int, scheme: str, lang: str, url: str = base + INGRESS) -> Page:
             context = browser.new_context(viewport={"width": width, "height": height}, color_scheme=scheme,
                                           device_scale_factor=2, locale=lang,
                                           extra_http_headers={"Accept-Language": lang})
+            context.add_init_script(WATCH_CSP)
             p = context.new_page()
+            p.errors = []
+            p.on("console", lambda m: m.type == "error" and p.errors.append(f"console: {m.text} ({m.location.get('url')})"))
+            p.on("pageerror", lambda e: p.errors.append(f"script: {e}"))
             p.goto(url)
             p.wait_for_load_state("networkidle")
             return p
 
-        p = page(1200, 760)
-        p.screenshot(path=OUT / "overview.png")
-        p.locator("#clients").scroll_into_view_if_needed()
-        p.locator(".chip[data-show=active]").click()
-        p.locator(".card", has=p.locator("#clients")).screenshot(path=OUT / "clients.png")
-        p.locator(".chip[data-show=all]").click()
-        p.locator("tr[data-addr='192.0.2.31'] button.edit").click()
-        p.wait_for_timeout(300)
-        p.screenshot(path=OUT / "edit.png")
-        p.context.close()
+        def done(p: Page, what: str) -> None:
+            for frame in p.frames:
+                p.errors += [f"CSP: {v}" for v in frame.evaluate("window.__csp || []")]
+            check(not p.errors, f"{what}: no console errors, script errors or CSP violations")
+            problems.extend(p.errors)
+            p.context.close()
 
-        p = page(390, 844, "dark", "de-DE")
-        p.screenshot(path=OUT / "mobile-dark.png", full_page=True)
-        p.context.close()
+        backgrounds = {}
+        for width, height, scheme, lang in ((1200, 760, "light", "en-US"), (1200, 760, "dark", "de-DE"),
+                                            (390, 844, "dark", "de-DE"), (390, 844, "light", "en-US")):
+            what = f"{width} px, {scheme}, {lang}"
+            print(f"==> {what}")
+            p = page(width, height, scheme, lang)
+            if shots and (width, scheme, lang) == (390, "dark", "de-DE"):
+                # Before anything scrolls the page or the client list
+                p.screenshot(path=OUT / "mobile-dark.png", full_page=True)
+            header(p, lang, width < 600)
+            backgrounds[scheme] = p.evaluate("getComputedStyle(document.body).backgroundColor")
+            check(p.evaluate("document.documentElement.scrollWidth <= innerWidth"), f"{lang}: nothing wider than {width} px")
+            # The page swaps in a fresh copy in place; with the request in flight the button spins
+            with p.expect_response(lambda r: "refresh=1" in r.url):
+                p.locator("#refresh").click()
+            p.wait_for_function("!document.querySelector('#refresh.busy')")
+            check(p.locator("header .stamp").count() == 1 and p.url == base + INGRESS, f"{lang}: refresh stays on the page")
+            if shots and (width, scheme) == (1200, "light"):
+                p.screenshot(path=OUT / "overview.png")
+                p.locator("#clients").scroll_into_view_if_needed()
+                p.locator(".chip[data-show=active]").click()
+                p.locator(".card", has=p.locator("#clients")).screenshot(path=OUT / "clients.png")
+                p.locator(".chip[data-show=all]").click()
+            p.locator("tr[data-addr='192.0.2.31'] button.edit").click()
+            check(p.locator("dialog#edit[open]").count() == 1, f"{lang}: edit dialog opens")
+            if shots and (width, scheme) == (1200, "light"):
+                p.wait_for_timeout(300)
+                p.screenshot(path=OUT / "edit.png")
+            p.locator("#edit-cancel").click()
+            done(p, what)
+        check(backgrounds["light"] != backgrounds["dark"], f"light and dark differ ({backgrounds})")
+
+        print("==> In Home Assistant's frame")
+        p = page(1200, 760, "light", "en-US", base + "/")
+        frame = p.frame_locator("#ingress")
+        frame.locator("header h1").wait_for()
+        check(frame.locator("header h1").text_content() == "NTP server", "page shown in the ingress frame")
+        frame.locator(f'header a[href="/config/app/{SLUG}/config"]').click()
+        p.wait_for_url(f"**/config/app/{SLUG}/config")
+        check(p.url == f"{base}/config/app/{SLUG}/config", "settings open outside the frame")
+        done(p, "frame")
         browser.close()
-    print(f"Screenshots in {OUT.relative_to(ROOT)}")
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
+    parser.add_argument("--check", action="store_true", help="check only, take no screenshots")
+    parser.add_argument("--image", default="chrony-mqtt:check", help="the built image (default chrony-mqtt:check)")
+    parser.add_argument("--build", action="store_true", help="build the image first")
+    args = parser.parse_args()
+    if args.build:
+        subprocess.run(["docker", "build", "-q", "--build-arg", f"BUILD_VERSION={VERSION}", "-t", args.image,
+                        str(ROOT / "chrony_ntp")], check=True, stdout=subprocess.DEVNULL)
+    if not args.check:
+        OUT.mkdir(parents=True, exist_ok=True)
+    try:
+        run(args.image, not args.check)
+    finally:
+        if problems:
+            print(docker("logs", APP, check_=False))
+        cleanup()
+    if problems:
+        print("FAILED:\n  " + "\n  ".join(problems))
+        sys.exit(1)
+    print("Page check passed." + ("" if args.check else f" Screenshots in {OUT.relative_to(ROOT)}"))
 
 
 if __name__ == "__main__":

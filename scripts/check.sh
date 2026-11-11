@@ -1,11 +1,15 @@
 #!/bin/bash
 # Runs locally what the CI workflow runs, so a push only confirms what already
 # passed here: the changelog check, shellcheck, ruff, the image build, the
-# tests of the configuration and the publisher, the tests of the web page and
-# the tests against a real Mosquitto broker. Keep the steps in step with
-# .github/workflows/ci.yaml.
+# tests of the configuration and the publisher, the tests of the web page, the
+# Page check (the page in a headless browser, as Home Assistant's ingress shows
+# it) and the tests against a real Mosquitto broker. Keep the steps in step
+# with .github/workflows/ci.yaml.
 #
 # Usage: scripts/check.sh [--no-broker]
+#
+# The Page check runs scripts/screenshots.py --check through uv with Playwright
+# (Google Chrome, else Playwright's Chromium) and takes no screenshots.
 #
 # Needs Docker: the tests run inside the built image, as in CI, for the
 # architecture of this machine (CI builds and tests amd64 and aarch64).
@@ -20,6 +24,7 @@ readonly NET=chrony-mqtt-check
 readonly BROKER=chrony-mqtt-check-broker
 # Keep in step with ci.yaml
 readonly RUFF_VERSION=0.17.3
+readonly PLAYWRIGHT_VERSION=1.58.0
 readonly SHELLCHECK_IMAGE=koalaman/shellcheck:v0.11.0
 readonly MOSQUITTO_IMAGE=eclipse-mosquitto:2.1.2-alpine
 
@@ -111,6 +116,7 @@ if [[ " ${failed[*]-} " == *" Build "* ]]; then
 fi
 run "Test" in_image --network none -- bash /tests/test_app.sh
 run "Test the web page" in_image --network none -- python3 -m unittest discover -s /tests -p 'test_*.py'
+run "Page" uv run -q --with "playwright==$PLAYWRIGHT_VERSION" python scripts/screenshots.py --check --image "$IMAGE"
 if $no_broker; then
     skipped+=("Against a real MQTT broker (--no-broker)")
 else

@@ -2,6 +2,16 @@
 
 All notable changes to this app are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the app uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.1.2] - 2026-11-11
+
+### Changed
+
+- The web page has the header every app page shares: its name, the time of the data ("As of HH:MM:SS", now also before the first read of chrony), the refresh button and the gear for the app's configuration; the app's name and version are the page's last line
+
+### Added
+
+- CI check **Page**: the built image with made-up data, opened in a headless browser as Home Assistant's ingress shows it (header, settings link, version line, no console errors, light, dark and phone width); `scripts/check.sh` runs it too, and the same script takes the screenshots
+
 ## [2.1.1] - 2026-11-11
 
 ### Security

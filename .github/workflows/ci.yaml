@@ -85,6 +85,32 @@ jobs:
           -v "${PWD}/tests:/tests:ro" --entrypoint python3 chrony-mqtt:test
           -m unittest discover -v -s /tests -p 'test_*.py'
 
+  page:
+    name: Page
+    # The ingress page as Home Assistant shows it: the built image with made-up
+    # data behind a stand-in for the ingress proxy, in a headless browser
+    # (STANDARD.md, sections 7 and 8). scripts/screenshots.py also takes the screenshots.
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build
+        run: |
+          version=$(yq -r '.version' chrony_ntp/config.yaml)
+          docker build --build-arg "BUILD_VERSION=${version}" \
+            -t chrony-mqtt:test chrony_ntp
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.14"
+      - name: Browser
+        run: |
+          pip install playwright==1.58.0
+          python -m playwright install --with-deps chromium
+      - name: Check the page
+        run: python scripts/screenshots.py --check --image chrony-mqtt:test
+
   broker:
     name: Against a real MQTT broker
     runs-on: ubuntu-latest

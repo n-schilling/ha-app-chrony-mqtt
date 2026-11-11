@@ -250,10 +250,7 @@ SCRIPT = """(() => {
       if (typing) fresh.querySelector("#q").replaceWith(q);
       document.querySelector("main").replaceWith(fresh);
       const stamp = document.querySelector("header .stamp"), freshStamp = doc.querySelector("header .stamp");
-      if (freshStamp) {
-        if (stamp) stamp.replaceWith(freshStamp);
-        else document.querySelector("#actions").prepend(freshStamp);
-      }
+      if (stamp && freshStamp) stamp.replaceWith(freshStamp);
       apply();
       if (typing) q.focus();
     } catch (e) {
@@ -950,11 +947,13 @@ def render(state: State, lang: str, slug: str | None, now: float | None = None, 
         else:
             body = f'<div class="cards">{status_card(f, chrony, state.clients, now)}<div>{sources_card(f, chrony)}{accuracy_card(f, chrony)}</div></div>'
         body += clients_card(f, state, now)
-    # The settings are Home Assistant's own page, outside the ingress frame
-    stamp = time.strftime("%H:%M:%S", time.localtime(state.at)) if state.at else ""
-    actions = f'<span class="stamp opt">{esc(t["as_of"].format(stamp))}</span>' if stamp else ""
-    actions += (f'<button class="icon-button" id="refresh" title="{esc(t["refresh"])}"'
-                f' aria-label="{esc(t["refresh"])}">{icon("refresh")}</button>')
+    # The same header on every page of the apps: when the data were read (the
+    # time of the request before the first read), refresh, and the settings,
+    # which are Home Assistant's own page, outside the ingress frame
+    stamp = time.strftime("%H:%M:%S", time.localtime(state.at or now))
+    actions = f'<span class="stamp opt">{esc(t["as_of"].format(stamp))}</span>'
+    actions += (f'<a class="icon-button" href="" id="refresh" role="button" title="{esc(t["refresh"])}"'
+                f' aria-label="{esc(t["refresh"])}">{icon("refresh")}</a>')
     actions += (f'<a class="icon-button" href="/config/app/{esc(slug)}/config" target="_top"'
                 f' title="{esc(t["settings"])}" aria-label="{esc(t["settings"])}">{icon("settings")}</a>'
                 if slug else "")
@@ -965,7 +964,7 @@ def render(state: State, lang: str, slug: str | None, now: float | None = None, 
             f"<title>{esc(t['title'])}</title><style>{stylesheet()}</style><script>{SCRIPT}</script></head><body>"
             f'<header><h1>{esc(t["title"])}</h1><div class="actions" id="actions">{actions}</div></header>'
             # The dialog stays outside main, which the script swaps for a fresh copy
-            f'<main>{body}</main><footer class="version">{esc(about)}</footer>{edit_dialog(t)}</body></html>')
+            f'<main>{body}</main>{edit_dialog(t)}<footer class="version">{esc(about)}</footer></body></html>')
 
 
 # --- The server ------------------------------------------------------------------------------

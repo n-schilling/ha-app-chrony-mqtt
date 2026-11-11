@@ -531,6 +531,23 @@ class Page(Fixture):
         self.assertIn('<footer class="version">Chrony NTP + MQTT 2.1.0</footer>', page)
         self.assertIn('<footer class="version">Chrony NTP + MQTT</footer>', w.render(self.state(), "en", None))
 
+    def test_same_header_as_every_app(self) -> None:
+        """h1, then stamp, refresh and settings, in this order (STANDARD.md, section 7)."""
+        state = self.state()
+        page = w.render(state, "de", "a1b2c3d4_chrony_ntp")
+        stamp = time.strftime("%H:%M:%S", time.localtime(state.at))
+        self.assertRegex(page, '<header><h1>NTP-Server</h1><div class="actions" id="actions">'
+                               f'<span class="stamp opt">Stand {stamp}</span>'
+                               '<a class="icon-button" href="" id="refresh" role="button" title="Aktualisieren"[^>]*>'
+                               '<svg[^>]*><path[^>]*/></svg></a>'
+                               '<a class="icon-button" href="/config/app/a1b2c3d4_chrony_ntp/config" target="_top"'
+                               ' title="Einstellungen"[^>]*><svg[^>]*><path[^>]*/></svg></a></div></header>')
+        # Without a slug no settings button; before the first read the time of the request
+        state.at = 0.0
+        page = w.render(state, "en", None, now=NOW)
+        self.assertIn(f'<span class="stamp opt">As of {time.strftime("%H:%M:%S", time.localtime(NOW))}</span>', page)
+        self.assertNotIn("/config/app/", page)
+
     def test_shared_stylesheet(self) -> None:
         page = w.render(self.state(), "en", None)
         self.assertIn("footer.version", page)
@@ -663,7 +680,7 @@ class Server(Fixture):
 
     def test_page_has_the_dialog_outside_main(self) -> None:
         page = self.get(self.serve(set()) + "/")[1]
-        self.assertIn('</main><footer class="version">Chrony NTP + MQTT 2.1.0</footer><dialog id="edit"', page)
+        self.assertRegex(page, r'</main><dialog id="edit".*</dialog><footer class="version">Chrony NTP \+ MQTT 2\.1\.0</footer></body>')
         self.assertIn(f'maxlength="{w.NOTE_MAX}"', page)
         self.assertIn('class="icon-button small edit"', page)
 

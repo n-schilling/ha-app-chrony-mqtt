@@ -68,7 +68,13 @@ The web page is a single Python module on the standard library, [`chrony_web.py`
 scripts/check.sh
 ```
 
-`scripts/check.sh` runs what CI runs: the changelog check, shellcheck, ruff, the image build, and the tests inside the built image, including those against a Mosquitto broker in Docker (`--no-broker` skips them). It needs Docker; shellcheck and ruff come from `PATH`, else from Docker and [uv](https://docs.astral.sh/uv/). The screenshots come from `scripts/screenshots.py` (see its header for the setup): it serves the page with made-up data on 127.0.0.1 and draws it with headless Chromium.
+`scripts/check.sh` runs what CI runs: the changelog check, shellcheck, ruff, the image build, the tests inside the built image, the Page check, and the tests against a Mosquitto broker in Docker (`--no-broker` skips them). It needs Docker and [uv](https://docs.astral.sh/uv/); shellcheck and ruff come from `PATH`, else from Docker and uv.
+
+The Page check, `scripts/screenshots.py`, starts the built image with made-up data next to a stand-in for Home Assistant's ingress proxy (at its address 172.30.32.2, path prefix `/api/hassio_ingress/<token>/`, the page in a frame) and opens it in headless Chromium, light, dark and at phone width, in English and German. It checks the header every app page shares (name; stamp "As of HH:MM:SS", refresh, and the settings gear, which opens the app's configuration outside the frame), the version line, and that there are no console errors or Content Security Policy violations. Without `--check` it also takes the screenshots in `docs/screenshots`:
+
+```bash
+uv run --with playwright==1.58.0 python scripts/screenshots.py --build
+```
 
 Releases: work on `dev`, raise `version` in `chrony_ntp/config.yaml` and add its section to the changelog; once `main` is green, the release workflow tags the version and publishes the release with that section.
 
