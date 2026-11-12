@@ -2,6 +2,21 @@
 
 All notable changes to this app are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the app uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.0] - 2026-11-12
+
+### Changed
+
+- **Renamed to Time Server** (slug `time_server`, repository `ha-app-time-server`). Home Assistant sees a new app: install it from the new repository and remove the old one. The MQTT device keeps its identifiers, so the entity IDs of existing installations stay; new installations get `binary_sensor.time_server_*`
+- chrony 4.9, built from its release (pinned by SHA-512) with the same features as before, since Alpine's stable branch still has 4.8
+- The sensor *NTP requests missing* is now *Requests missing*: clients over HTTP count as well
+
+### Added
+
+- Time over HTTP for devices that set their clock from a web server: `GET /` or `/time` answers with chrony's time in the `Date` header and to the microsecond as JSON, `HEAD` for htpdate; `503` without a `Date` header while chrony is not synchronized. Same networks and rate limit as NTP. Runs as a user of its own on container port `8080/tcp`, off until a host port is set
+- The overview starts with the current time, ticking to the millisecond in Home Assistant's time zone, and how far the clock of the viewing device is off, measured through Home Assistant
+- The client list shows the protocol each client asks over (NTP, HTTP or both); requests count both. The overview shows the HTTP requests
+- `scripts/query_time_server.py` asks a server from outside over NTP and HTTP
+
 ## [2.4.0] - 2026-11-11
 
 ### Changed
@@ -228,4 +243,4 @@ All notable changes to this app are documented here. The format follows [Keep a 
 
 - First version in this repository
 
-[1.3.1]: https://github.com/n-schilling/ha-app-chrony-mqtt/releases/tag/v1.3.1
+[1.3.1]: https://github.com/n-schilling/ha-app-time-server/releases/tag/v1.3.1

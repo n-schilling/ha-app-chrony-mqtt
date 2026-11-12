@@ -1,11 +1,13 @@
 abi <abi/3.0>,
 #include <tunables/global>
 
-# chronyd serves NTP and may set the host clock (SYS_TIME); the web page and
-# the sensor publisher read chronyc and talk to the MQTT broker. s6-overlay
-# and the setup run as root; chronyd and the page run as user chrony, the
-# publisher as user chronymqtt. Tested on a real installation.
-profile chrony_ntp flags=(attach_disconnected,mediate_deleted) {
+# chronyd serves NTP and may set the host clock (SYS_TIME); the HTTP time
+# service serves time over TCP; the web page, the HTTP time service and the
+# sensor publisher read chronyc, the publisher talks to the MQTT broker.
+# s6-overlay and the setup run as root; chronyd and the page run as user
+# chrony, the HTTP time service as timehttp, the publisher as chronymqtt.
+# Tested on a real installation.
+profile time_server flags=(attach_disconnected,mediate_deleted) {
   #include <abstractions/base>
 
   # s6-overlay and the setup prepare the folders of user chrony and start

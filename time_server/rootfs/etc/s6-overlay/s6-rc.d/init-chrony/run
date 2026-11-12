@@ -23,6 +23,9 @@ install -d -o chrony -g chrony -m 0750 /data/chrony
 install -d -o chrony -g chrony -m 0700 /data/web
 install -d -o chrony -g chrony -m 0755 /run/chrony-web
 install -d -o chronymqtt -g chronymqtt -m 0700 /run/chrony-mqtt
+# The HTTP time service, as user timehttp, writes its client log there; the
+# page reads it
+install -d -o timehttp -g timehttp -m 0755 /run/time-http
 # Up to 2.1.0 the page kept its clients in /data, as root
 for file in clients.json clients.json.broken; do
     if [[ -f "/data/${file}" && ! -e "/data/web/${file}" ]]; then
@@ -52,6 +55,8 @@ else
     bashio::log.info "Serving time to ${networks[*]}"
 fi
 printf 'allow %s\n' "${networks[@]}" >> ${CHRONY_CONF}
+# The same networks may ask for the time over HTTP
+printf '%s\n' "${networks[@]}" > /run/time-http/allowed
 
 # Without any upstream source, keep serving the host clock at stratum 10, so
 # clients stay in step with each other

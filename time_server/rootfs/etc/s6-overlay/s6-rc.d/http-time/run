@@ -1,0 +1,11 @@
+#!/command/with-contenv bashio
+# shellcheck shell=bash
+# ==============================================================================
+# Time over HTTP, as a user of its own: it faces the network like chronyd, but
+# needs neither chronyd's command socket nor the Supervisor. It reads chrony's
+# tracking over chronyc's local UDP port.
+# ==============================================================================
+bashio::log.info 'Starting time over HTTP'
+LOG_LEVEL=$(bashio::config 'log_level' 'info')
+export LOG_LEVEL
+exec env -u SUPERVISOR_TOKEN /command/s6-setuidgid timehttp python3 /usr/local/lib/time_http.py

@@ -8,9 +8,9 @@ updates:
     groups:
       actions:
         patterns: ["*"]
-  # The base image in chrony_ntp/Dockerfile
+  # The base image in time_server/Dockerfile
   - package-ecosystem: docker
-    directory: /chrony_ntp
+    directory: /time_server
     target-branch: dev
     schedule:
       interval: weekly

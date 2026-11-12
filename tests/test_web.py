@@ -17,7 +17,7 @@ import urllib.request
 from pathlib import Path
 
 TESTS = Path(__file__).resolve().parent
-sys.path[:0] = ["/usr/local/lib", str(TESTS.parent / "chrony_ntp/rootfs/usr/local/lib")]
+sys.path[:0] = ["/usr/local/lib", str(TESTS.parent / "time_server/rootfs/usr/local/lib")]
 os.environ["PATH"] = f"{TESTS / 'stubs'}:{os.environ['PATH']}"
 os.environ.setdefault("TRACKING", str(TESTS / "fixtures/tracking.csv"))
 
@@ -388,7 +388,7 @@ class Views(Fixture):
         for tab in ("overview", "upstream", "clients"):
             page = w.render(state, "en", None, tab=tab)
             header = page[page.index("<header>"):page.index("</header>")]
-            self.assertRegex(header, r'^<header><img class="app-icon"[^>]*><h1>Chrony NTP \+ MQTT</h1><nav class="tabs">')
+            self.assertRegex(header, r'^<header><img class="app-icon"[^>]*><h1>Time Server</h1><nav class="tabs">')
             self.assertEqual(re.findall(r'<a class="[a-z]*" href="([^"]*)"', header), ["?", "?tab=upstream", "?tab=clients"])
             self.assertEqual(re.findall(r'<a class="active" href="([^"]*)" aria-current="page">', header),
                              ["?" if tab == "overview" else f"?tab={tab}"])
@@ -422,7 +422,7 @@ class Editing(Fixture):
         page = w.render(state, "en", None, tab="clients")
         self.assertIn('data-name="fridge"', page)
         self.assertIn('<span class="sub memo" title="behind the door">behind the door</span>', page)
-        self.assertIn('data-text="fridge plug.lan 192.0.2.6 behind the door"', page)
+        self.assertIn('data-text="fridge plug.lan 192.0.2.6 behind the door ntp"', page)
         self.assertIn('data-dns="plug"', page)
         # Empty fields drop name and note again
         state.change({"action": "edit", "ip": "192.0.2.6", "name": "", "note": ""})
@@ -487,6 +487,151 @@ class Forgetting(Fixture):
         self.assertEqual(state.change({"action": "forget", "ip": "192.0.2.6"}), 404)
 
 
+class Http(Fixture):
+    """Clients of the HTTP time service, taken from its log."""
+
+    def log(self, clients: dict, run: str = "h1", requests: int | None = None, dropped: int = 0) -> None:
+        total = sum(c[0] for c in clients.values()) if requests is None else requests
+        self.http.write_text(json.dumps({"run": run, "requests": total, "dropped": dropped, "clients": {
+            ip: {"requests": r, "dropped": d, "last": last, **({"interval": i} if i is not None else {})}
+            for ip, (r, d, last, i) in clients.items()}}))
+
+    def http_state(self, read=None, now: float = NOW) -> w.State:
+        state = w.State(w.Clients(self.path), names(), read=read or asking({}), clock=lambda: now,
+                        http_log=self.http)
+        state.refresh()
+        return state
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.http = Path(self.tmp.name) / "http.json"
+
+    def test_no_log_yet(self) -> None:
+        state = self.http_state()
+        self.assertEqual(state.clients.data, {})
+        self.assertNotIn("http", state.clients.totals)
+        self.assertNotIn("HTTP requests", w.render(state, "en", None))
+
+    def test_http_client_listed_with_its_protocol(self) -> None:
+        self.log({"192.0.2.20": (3, 1, NOW - 50, 6), "127.0.0.1": (9, 0, NOW, None)})
+        state = self.http_state()
+        entry = state.clients.data["192.0.2.20"]
+        self.assertEqual(sorted(state.clients.data), ["192.0.2.20"])
+        self.assertEqual((w.Clients.protocols(entry), w.Clients.requests(entry), w.Clients.dropped(entry)),
+                         (["HTTP"], 3, 1))
+        self.assertEqual((entry["last_seen"], w.interval_of(entry)), (NOW - 50, 6))
+        page = w.render(state, "en", None, tab="clients")
+        self.assertIn('<td class="proto">HTTP</td>', page)
+        self.assertIn('data-requests="3" data-dropped="1" data-protocol="http" data-interval="6"', page)
+        self.assertIn('<th data-sort="protocol">Protocol</th>', page)
+
+    def test_client_over_both_protocols(self) -> None:
+        self.log({"192.0.2.6": (5, 0, NOW - 10, None)})
+        state = self.http_state(read=asking({"192.0.2.6": (8, 60, 30)}))
+        entry = state.clients.data["192.0.2.6"]
+        self.assertEqual((w.Clients.protocols(entry), w.Clients.requests(entry)), (["NTP", "HTTP"], 35))
+        # The later request of the two
+        self.assertEqual(entry["last_seen"], NOW - 10)
+        # chrony's interval comes first
+        self.assertEqual(w.interval_of(entry), 8)
+        self.assertIn('<td class="proto">NTP, HTTP</td>', w.render(state, "en", None, tab="clients"))
+
+    def test_totals_on_the_overview(self) -> None:
+        self.log({"192.0.2.20": (3, 0, NOW - 50, None)}, requests=7, dropped=2)
+        page = w.render(self.http_state(), "de", None)
+        self.assertRegex(page, r'<th>HTTP-Anfragen</th><td>7<span class="sub">seit [0-9.]+ · 7 seit App-Start · '
+                               r'Verworfen 2</span>')
+
+    def test_counts_survive_a_new_service(self) -> None:
+        self.log({"192.0.2.20": (3, 0, NOW - 50, None)})
+        self.http_state()
+        self.log({"192.0.2.20": (1, 0, NOW + 10, None)}, run="h2")
+        state = self.http_state(now=NOW + 20)
+        self.assertEqual(w.Clients.requests(state.clients.data["192.0.2.20"]), 4)
+        self.assertEqual(w.Clients.sum(state.clients.totals["http"], "requests"), 4)
+
+    def test_same_service_counts_only_the_growth(self) -> None:
+        self.log({"192.0.2.20": (3, 0, NOW - 50, None)})
+        state = self.http_state()
+        self.log({"192.0.2.20": (5, 0, NOW - 5, None)})
+        state.refresh()
+        self.assertEqual(w.Clients.requests(state.clients.data["192.0.2.20"]), 5)
+
+    def test_forgotten_until_it_asks_again(self) -> None:
+        self.log({"192.0.2.20": (3, 0, NOW - 50, None)})
+        state = self.http_state()
+        self.assertEqual(state.change({"action": "forget", "ip": "192.0.2.20"}), 204)
+        state.refresh()
+        self.assertNotIn("192.0.2.20", state.clients.data)
+        self.log({"192.0.2.20": (4, 0, NOW - 1, None)})
+        state.refresh()
+        self.assertEqual(w.Clients.requests(state.clients.data["192.0.2.20"]), 1)
+        self.assertEqual(state.clients.forgotten_http, {})
+
+    def test_forgotten_over_ntp_comes_back_over_http(self) -> None:
+        state = self.http_state(read=asking({"192.0.2.6": (8, 60, 30)}))
+        state.change({"action": "forget", "ip": "192.0.2.6"})
+        self.log({"192.0.2.6": (2, 0, NOW - 1, None)})
+        state.refresh()
+        entry = state.clients.data["192.0.2.6"]
+        # Over HTTP only: chrony's counters from before are not taken in
+        self.assertEqual((w.Clients.protocols(entry), w.Clients.requests(entry)), (["HTTP"], 2))
+        state._read = asking({"192.0.2.6": (8, 5, 31)})
+        state.refresh()
+        self.assertEqual(w.Clients.requests(state.clients.data["192.0.2.6"]), 3)
+
+    def test_kept_in_the_store(self) -> None:
+        self.log({"192.0.2.20": (3, 0, NOW - 50, 6)})
+        self.http_state().clients.save(NOW)
+        self.http.unlink()
+        state = self.http_state(now=NOW + 60)
+        self.assertEqual(w.Clients.requests(state.clients.data["192.0.2.20"]), 3)
+
+    def test_http_client_counts_for_requests_missing(self) -> None:
+        self.log({"192.0.2.20": (3, 0, NOW - 50, 6)})
+        self.assertFalse(self.http_state().clients.requests_missing(NOW))
+        self.assertTrue(self.http_state(now=NOW + DAY).clients.requests_missing(NOW + DAY))
+
+    def test_broken_log_logged_once(self) -> None:
+        self.http.write_text("{")
+        with self.assertLogs("chrony_web", "WARNING") as logs:
+            state = self.http_state()
+            state.refresh()
+        self.assertEqual(len(logs.output), 1)
+        self.assertEqual(state.clients.data, {})
+
+
+class Clock(Fixture):
+    def test_chronys_time(self) -> None:
+        state = self.state()
+        self.assertEqual(state.now(), {"time": NOW + 0.000091137, "stratum": 2})
+
+    def test_no_time_while_unsynchronized(self) -> None:
+        os.environ["TRACKING"] = str(TESTS / "fixtures/tracking-unsynced.csv")
+        try:
+            self.assertEqual(self.state().now(), {"time": None})
+        finally:
+            os.environ["TRACKING"] = str(TESTS / "fixtures/tracking.csv")
+
+    def test_local_fallback_hands_out_time(self) -> None:
+        os.environ["TRACKING"] = str(TESTS / "fixtures/tracking-local.csv")
+        try:
+            self.assertIsNotNone(self.state().now()["time"])
+        finally:
+            os.environ["TRACKING"] = str(TESTS / "fixtures/tracking.csv")
+
+    def test_before_the_first_read(self) -> None:
+        state = w.State(w.Clients(self.path), names(), clock=lambda: NOW)
+        self.assertEqual(state.now(), {"time": None})
+
+    def test_card_on_the_overview_only(self) -> None:
+        state = self.state()
+        self.assertIn('<div class="clock" id="clock"', w.render(state, "de", None))
+        self.assertIn("<h2>Aktuelle Zeit</h2>", w.render(state, "de", None))
+        self.assertNotIn('id="clock"', w.render(state, "de", None, tab="clients"))
+        self.assertNotIn('id="clock"', w.render(state, "de", None, tab="upstream"))
+
+
 class Formatting(unittest.TestCase):
     def test_durations(self) -> None:
         de = w.Format("de")
@@ -528,20 +673,20 @@ class Formatting(unittest.TestCase):
 class Page(Fixture):
     def test_status_sources_and_clients(self) -> None:
         state = self.state(table={"192.0.2.6": "plug.lan"})
-        overview = w.render(state, "de", "abc_chrony_ntp")
+        overview = w.render(state, "de", "abc_time_server")
         self.assertIn("Synchron mit 192.53.103.108", overview)
         self.assertIn("Clients: 1 aktiv, 1 inaktiv", overview)
-        upstream = w.render(state, "de", "abc_chrony_ntp", tab="upstream")
+        upstream = w.render(state, "de", "abc_time_server", tab="upstream")
         self.assertIn("ausgewählt", upstream)
         self.assertIn("nicht erreichbar", upstream)
-        page = w.render(state, "de", "abc_chrony_ntp", tab="clients")
+        page = w.render(state, "de", "abc_time_server", tab="clients")
         self.assertIn('data-name="plug"', page)
         self.assertIn("vor 2 min", page)
         # 192.0.2.6 asked 2 minutes ago, 192.0.2.7 83 minutes ago
         self.assertIn("Alle · 2", page)
         self.assertIn("Aktiv · 1", page)
         self.assertIn("Inaktiv · 1", page)
-        self.assertIn('href="/config/app/abc_chrony_ntp/config" target="_top"', page)
+        self.assertIn('href="/config/app/abc_time_server/config" target="_top"', page)
 
     def test_upstream_names_from_dns(self) -> None:
         state = self.state(table={"192.53.103.108": "time.example.net"})
@@ -556,7 +701,7 @@ class Page(Fixture):
         page = w.render(self.state(read=gone, now=NOW + 3600), "en", None, tab="clients")
         self.assertIn("1 h 2 min ago", page)
         # Its requests and the last interval chrony knew stay from the store
-        self.assertIn('data-requests="12" data-dropped="0" data-interval="8"', page)
+        self.assertIn('data-requests="12" data-dropped="0" data-protocol="ntp" data-interval="8"', page)
 
     def test_names_from_dns_escaped(self) -> None:
         state = self.state(table={"192.0.2.6": '<img src=x onerror="alert(1)">'})
@@ -576,20 +721,20 @@ class Page(Fixture):
 
     def test_version_at_the_bottom(self) -> None:
         page = w.render(self.state(), "en", None, version="2.1.0")
-        self.assertIn('<footer class="version">Chrony NTP + MQTT 2.1.0</footer>', page)
-        self.assertIn('<footer class="version">Chrony NTP + MQTT</footer>', w.render(self.state(), "en", None))
+        self.assertIn('<footer class="version">Time Server 2.1.0</footer>', page)
+        self.assertIn('<footer class="version">Time Server</footer>', w.render(self.state(), "en", None))
 
     def test_same_header_as_every_app(self) -> None:
         """h1, then stamp, refresh and settings, in this order (STANDARD.md, section 7)."""
         state = self.state()
-        page = w.render(state, "de", "a1b2c3d4_chrony_ntp")
+        page = w.render(state, "de", "a1b2c3d4_time_server")
         stamp = time.strftime("%H:%M:%S", time.localtime(state.at))
-        self.assertRegex(page, '<header><img class="app-icon" src="icon.png" alt="" width="24" height="24"><h1>Chrony NTP \\+ MQTT</h1>'
+        self.assertRegex(page, '<header><img class="app-icon" src="icon.png" alt="" width="24" height="24"><h1>Time Server</h1>'
                                '<nav class="tabs">.*</nav><div class="actions" id="actions">'
                                f'<span class="stamp opt">Stand {stamp}</span>'
                                '<a class="icon-button" href="" id="refresh" role="button" title="Aktualisieren"[^>]*>'
                                '<svg[^>]*><path[^>]*/></svg></a>'
-                               '<a class="icon-button" href="/config/app/a1b2c3d4_chrony_ntp/config" target="_top"'
+                               '<a class="icon-button" href="/config/app/a1b2c3d4_time_server/config" target="_top"'
                                ' title="Einstellungen"[^>]*><svg[^>]*><path[^>]*/></svg></a></div></header>')
         # Without a slug no settings button; before the first read the time of the request
         state.at = 0.0
@@ -675,6 +820,11 @@ class Server(Fixture):
         with self.assertRaises((urllib.error.URLError, ConnectionError)):
             urllib.request.urlopen(f"http://127.0.0.1:{server.server_address[1]}/", timeout=5)
 
+    def test_time_for_the_clock(self) -> None:
+        code, body = self.get(self.serve(set()) + "/now")
+        self.assertEqual(code, 200)
+        self.assertEqual(json.loads(body), {"time": NOW + 0.000091137, "stratum": 2})
+
     def test_idle_connections_time_out(self) -> None:
         self.assertEqual(w.handler(self.state(), None, set()).timeout, 10)
 
@@ -738,7 +888,7 @@ class Server(Fixture):
     def test_app_icon(self) -> None:
         # The store icon, copied into the image; the page links it relative to the ingress path
         # (in the image the checkout is not there; the image's copy is then the one to serve)
-        repo = TESTS.parent / "chrony_ntp/icon.png"
+        repo = TESTS.parent / "time_server/icon.png"
         icon = repo.read_bytes() if repo.exists() else w.APP_ICON
         self.assertTrue(icon and icon.startswith(b"\x89PNG"), "icon.png in the image or the checkout")
         base = self.serve(set())
@@ -759,7 +909,7 @@ class Server(Fixture):
         base = self.serve(set())
         self.assertNotIn("<dialog", self.get(base + "/")[1])
         page = self.get(base + "/?tab=clients")[1]
-        self.assertRegex(page, r'</main><dialog id="edit".*</dialog><footer class="version">Chrony NTP \+ MQTT 2\.1\.0</footer></body>')
+        self.assertRegex(page, r'</main><dialog id="edit".*</dialog><footer class="version">Time Server 2\.1\.0</footer></body>')
         self.assertIn(f'maxlength="{w.NOTE_MAX}"', page)
         self.assertIn('class="icon-button small edit"', page)
 

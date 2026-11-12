@@ -1,4 +1,4 @@
-Chrony NTP + MQTT app for Home Assistant
+Time Server app for Home Assistant
 Copyright 2026 Nico Schilling
 
 This app is based on the Chrony app of the Home Assistant Community Apps

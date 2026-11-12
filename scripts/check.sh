@@ -19,9 +19,9 @@
 set -uo pipefail
 cd "$(dirname "$0")/.." || exit 2
 
-readonly IMAGE=chrony-mqtt:check
-readonly NET=chrony-mqtt-check
-readonly BROKER=chrony-mqtt-check-broker
+readonly IMAGE=time-server:check
+readonly NET=time-server-check
+readonly BROKER=time-server-check-broker
 # Keep in step with ci.yaml
 readonly RUFF_VERSION=0.17.3
 readonly PLAYWRIGHT_VERSION=1.58.0
@@ -57,13 +57,13 @@ run() { # run <name> <command...>
     echo
 }
 
-version=$(sed -n 's/^version: *"\{0,1\}\([^"]*\)"\{0,1\} *$/\1/p' chrony_ntp/config.yaml)
+version=$(sed -n 's/^version: *"\{0,1\}\([^"]*\)"\{0,1\} *$/\1/p' time_server/config.yaml)
 
 shell_scripts=(
-    chrony_ntp/rootfs/etc/s6-overlay/s6-rc.d/*/run
-    chrony_ntp/rootfs/usr/local/lib/mqtt-device.sh
-    chrony_ntp/rootfs/usr/local/bin/chrony-mqtt-kpi
-    chrony_ntp/rootfs/etc/s6-overlay/s6-rc.d/chrony/finish
+    time_server/rootfs/etc/s6-overlay/s6-rc.d/*/run
+    time_server/rootfs/usr/local/lib/mqtt-device.sh
+    time_server/rootfs/usr/local/bin/chrony-mqtt-kpi
+    time_server/rootfs/etc/s6-overlay/s6-rc.d/chrony/finish
     scripts/check.sh
     tests/test_app.sh tests/test_broker.sh tests/stubs/chronyc tests/stubs/mosquitto_*
 )
@@ -77,9 +77,9 @@ shellcheck_run() {
 }
 ruff_run() {
     if command -v ruff > /dev/null && [[ "$(ruff --version)" == "ruff $RUFF_VERSION" ]]; then
-        ruff check chrony_ntp/rootfs/usr/local/lib tests
+        ruff check time_server/rootfs/usr/local/lib tests
     else
-        uvx "ruff==$RUFF_VERSION" check chrony_ntp/rootfs/usr/local/lib tests
+        uvx "ruff==$RUFF_VERSION" check time_server/rootfs/usr/local/lib tests
     fi
 }
 in_image() { # in_image <docker run options...> -- <entrypoint> <arguments...>
@@ -106,10 +106,10 @@ broker_tests() {
 }
 
 run "Changelog has the version $version" bash -c \
-    '.github/scripts/changelog-section.sh chrony_ntp/CHANGELOG.md "$1" > /dev/null' _ "$version"
+    '.github/scripts/changelog-section.sh time_server/CHANGELOG.md "$1" > /dev/null' _ "$version"
 run "Shell scripts" shellcheck_run
 run "Python" ruff_run
-run "Build" docker build -q --build-arg "BUILD_VERSION=$version" -t "$IMAGE" chrony_ntp
+run "Build" docker build -q --build-arg "BUILD_VERSION=$version" -t "$IMAGE" time_server
 if [[ " ${failed[*]-} " == *" Build "* ]]; then
     echo "FAILED: ${failed[*]}"
     exit 1

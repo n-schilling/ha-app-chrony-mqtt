@@ -5,9 +5,9 @@
 # else is on the web page. Started by the s6 service mqtt-kpi as user chronymqtt
 # ==============================================================================
 readonly NODE='chrony_ntp'
-readonly DEV_NAME='Chrony NTP Server'
-readonly APP_NAME='Chrony NTP + MQTT'
-readonly SUPPORT_URL='https://github.com/n-schilling/ha-app-chrony-mqtt'
+readonly DEV_NAME='Time Server'
+readonly APP_NAME='Time Server'
+readonly SUPPORT_URL='https://github.com/n-schilling/ha-app-time-server'
 readonly TOPIC="chrony/${NODE}"
 readonly AVAIL="${TOPIC}/availability"
 # Written by the web page on every read of chrony
@@ -16,7 +16,7 @@ readonly STATUS=${CHRONY_WEB_STATUS:-/run/chrony-web/status.json}
 # states are cleared
 readonly GONE=(clients clients/attr clients_active ntp_requests ntp_dropped stratum
     last_sync system_offset rms_offset root_dispersion reference)
-# The app's slug, e.g. 0a032ba2_chrony_ntp; the Supervisor names the
+# The app's slug, e.g. a1b2c3d4_time_server; the Supervisor names the
 # container's host after it
 readonly SLUG=${HOSTNAME//-/_}
 MODEL="chrony $(chronyd --version | grep -o '[0-9][0-9.]*' | head -1)"
@@ -119,7 +119,7 @@ publish_discovery() {
     COMPONENTS='{}'
     discover sync_problem   'Sync problem'         binary_sensor \
         '{"device_class":"problem","payload_on":"ON","payload_off":"OFF"}'
-    discover requests_missing 'NTP requests missing' binary_sensor \
+    discover requests_missing 'Requests missing' binary_sensor \
         '{"device_class":"problem","payload_on":"ON","payload_off":"OFF"}'
     md_announce "${NODE}" "$(jq -nc --argjson c "${COMPONENTS}" --arg avail "${AVAIL}" \
         --arg dev "${DEV_NAME}" --arg model "${MODEL}" --arg cfg "homeassistant://config/app/${SLUG}/info" \

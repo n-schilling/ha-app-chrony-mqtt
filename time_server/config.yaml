@@ -1,8 +1,8 @@
-name: Chrony NTP + MQTT
-version: "2.4.0"
-slug: chrony_ntp
-description: Local NTP server (chrony) with a web page of its state and clients, and problem sensors via MQTT discovery
-url: https://github.com/n-schilling/ha-app-chrony-mqtt
+name: Time Server
+version: "3.0.0"
+slug: time_server
+description: Local time server for NTP and HTTP (chrony), with a web page of its state and clients and problem sensors via MQTT discovery
+url: https://github.com/n-schilling/ha-app-time-server
 startup: system
 homeassistant: 2026.11.0
 arch:
@@ -11,15 +11,17 @@ arch:
 init: false
 ingress: true
 panel_icon: mdi:clock-check-outline
-panel_title: NTP Server
+panel_title: Time Server
 privileged:
   - SYS_TIME
 services:
   - mqtt:need
 ports:
   123/udp: 123
+  8080/tcp: null
 ports_description:
   123/udp: NTP (Network Time Protocol)
+  8080/tcp: Time over HTTP (off until a port is set)
 options:
   set_system_clock: true
   mode: pool

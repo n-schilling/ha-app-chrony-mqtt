@@ -63,6 +63,8 @@ expect 'no initstepslew' "$(grep -c '^initstepslew' "${CONF}")" 0
 expect 'folders of the page belong to chronyd' \
     "$(stat -c '%U %a' /data/web /run/chrony-web | tr '\n' '|')" 'chrony 700|chrony 755|'
 expect 'folder of the publisher belongs to its own user' "$(stat -c '%U %a' /run/chrony-mqtt)" 'chronymqtt 700'
+expect 'folder of the HTTP time service belongs to its own user' "$(stat -c '%U %a' /run/time-http)" 'timehttp 755'
+expect 'chronyd is version 4.9' "$(chronyd -v | grep -o 'version [0-9.]*')" 'version 4.9'
 expect 'chronyd accepts the pool configuration' "$(chronyd -p -f "${CONF}" > /dev/null 2>&1; echo $?)" 0
 
 init_config '{"mode":"server","ntp_pool":"","ntp_server":["a.example","b.example","c.example"]}'
@@ -92,6 +94,10 @@ expect 'publisher runs as its own user' \
     "$(grep -c 's6-setuidgid chronymqtt' "${S6}/mqtt-kpi/run")|$(grep -c 'CACHE_DIR=/run/chrony-mqtt/bashio /usr/bin/bashio /usr/local/bin/chrony-mqtt-kpi$' "${S6}/mqtt-kpi/run")" '1|1'
 expect 'the publisher user can start it' "$(su -s /bin/sh chronymqtt -c "test -x ${KPI_SCRIPT}"; echo $?)" 0
 expect 'the publisher user is not in the group chrony' "$(id -Gn chronymqtt)" chronymqtt
+expect 'HTTP time service runs as its own user, without the Supervisor token' \
+    "$(grep -c '^exec env -u SUPERVISOR_TOKEN /command/s6-setuidgid timehttp python3 /usr/local/lib/time_http.py$' "${S6}/http-time/run")" 1
+expect 'the HTTP time service user is not in the group chrony' "$(id -Gn timehttp)" timehttp
+expect 'HTTP time service is started' "$([[ -e /etc/s6-overlay/user-bundles.d/user/contents.d/http-time ]] && echo yes)" yes
 
 echo '# Allowed networks and offline fallback'
 POOL='"mode":"pool","ntp_pool":"pool.ntp.org","ntp_server":[]'
@@ -101,9 +107,11 @@ expect 'no allowed networks: the private ones' "$(grep -E '^(allow|local)' "${CO
 expect 'chronyd accepts the private networks' "$(chronyd -p -f "${CONF}" > /dev/null 2>&1; echo $?)" 0
 init_config "{${POOL},\"allowed_networks\":[\"0.0.0.0/0\",\"::/0\"]}"
 expect 'every client on request' "$(grep '^allow' "${CONF}" | tr '\n' '|')" 'allow 0.0.0.0/0|allow ::/0|'
+expect 'the same networks for HTTP' "$(tr '\n' '|' < /run/time-http/allowed)" '0.0.0.0/0|::/0|'
 expect 'chronyd accepts every network' "$(chronyd -p -f "${CONF}" > /dev/null 2>&1; echo $?)" 0
 init_config "{${POOL},\"allowed_networks\":[\"10.0.0.0/16\",\"fd00::/8\"],\"serve_when_offline\":true}"
 expect 'allowed networks only' "$(grep '^allow' "${CONF}" | tr '\n' '|')" 'allow 10.0.0.0/16|allow fd00::/8|'
+expect 'allowed networks only for HTTP' "$(tr '\n' '|' < /run/time-http/allowed)" '10.0.0.0/16|fd00::/8|'
 expect 'offline fallback serves the local clock' "$(grep '^local' "${CONF}")" 'local stratum 10'
 expect 'chronyd accepts networks and fallback' "$(chronyd -p -f "${CONF}" > /dev/null 2>&1; echo $?)" 0
 
@@ -138,7 +146,7 @@ expect 'platform per entity' "$(cmp requests_missing | jq -r '.platform + " " + 
 expect 'chrony version from the image' "$(dev | jq -r '.device.model' | grep -cE '^chrony [0-9]+\.[0-9]+')" 1
 expect 'availability for the whole device' "$(dev | jq -r .availability_topic)" chrony/chrony_ntp/availability
 expect 'origin names the app and its support URL' "$(dev | jq -r '.origin | .name + " " + .support_url')" \
-    'Chrony NTP + MQTT https://github.com/n-schilling/ha-app-chrony-mqtt'
+    'Time Server https://github.com/n-schilling/ha-app-time-server'
 expect 'device links to the app page' "$(dev | jq -r .device.configuration_url)" \
     "homeassistant://config/app/${HOSTNAME//-/_}/info"
 

@@ -1,6 +1,11 @@
 """A small web page behind Home Assistant's ingress, laid out like Home
-Assistant's settings: chrony's state, its upstream sources and every client
-that took time from it, with the time of its last request.
+Assistant's settings: the current time, chrony's state, its upstream sources
+and every client that took time from it, over NTP or HTTP, with the time of
+its last request.
+
+The HTTP time service (time_http.py) runs apart, as a user of its own, and
+writes what each client asked to HTTP_LOG; the page takes it in like chrony's
+client log, with counters of their own per client.
 
 chrony keeps its counters and client log in memory only, so a restart of the
 app starts its request counters at zero and forgets every client until it
@@ -13,7 +18,7 @@ given to a client on the page are kept with it, and such a client stays until
 it is forgotten on the page.
 
 Every read of chrony also writes STATUS, from which the key figure publisher
-takes the NTP requests missing sensor: no client of the last RECENT asked
+takes the Requests missing sensor: no client of the last RECENT asked
 within its usual time, so the server or the way to it is broken.
 
 The page is rendered on the server and needs nothing beyond Python's standard
@@ -50,16 +55,19 @@ LOGGER = logging.getLogger("chrony_web")
 PORT = 8099              # the Supervisor's default ingress port
 # The Supervisor's ingress proxy; nothing else may talk to the page
 INGRESS_PEER = "172.30.32.2"
-APP_NAME = "Chrony NTP + MQTT"
+APP_NAME = "Time Server"
 STORE = Path("/data/web/clients.json")
 STATUS = Path("/run/chrony-web/status.json")  # read by the key figure publisher
+HTTP_LOG = Path("/run/time-http/clients.json")  # written by the HTTP time service
 PIDFILE = Path("/run/chrony/chronyd.pid")
 COUNTERS = ("requests", "dropped")
 POLL = 15                # seconds between two reads of chronyc
 REFRESH = 30             # seconds between two page updates in the browser
+MEASURE_EVERY = 60       # seconds between two measurements of the browser's clock
+SAMPLES = 8              # round trips per measurement; the shortest counts
 SAVE_EVERY = 300         # at most one write of the client store per 5 minutes
 FORGET_AFTER = 30 * 86400
-# Only clients that asked within this time count for NTP requests missing, so a
+# Only clients that asked within this time count for Requests missing, so a
 # device taken away, also one with a name, stops holding it on after a week
 RECENT = 7 * 86400
 # Clients kept at most: whoever reaches port 123 can make chrony see new
@@ -116,6 +124,10 @@ TEXT = {
         "states": {"*": "selected", "+": "combined", "-": "not combined", "?": "unreachable",
                    "x": "falseticker", "~": "too variable"},
         "overview": "Overview", "upstream": "Upstream", "clients_summary": "{} active, {} inactive",
+        "http_requests": "HTTP requests", "all_requests": "Requests", "protocol": "Protocol",
+        "now": "Current time", "device_clock": "This device's clock", "ahead": "{} ahead", "behind": "{} behind",
+        "in_step": "in step", "measured": "measured through Home Assistant to ± {}", "measuring": "Measuring …",
+        "no_time": "chrony hands out no time right now.",
     },
     "de": {
         "title": APP_NAME, "settings": "Einstellungen", "refresh": "Aktualisieren", "as_of": "Stand {}", "status": "Status", "accuracy": "Genauigkeit", "synced": "Synchron mit {}",
@@ -142,6 +154,10 @@ TEXT = {
         "states": {"*": "ausgewählt", "+": "kombiniert", "-": "nicht kombiniert", "?": "nicht erreichbar",
                    "x": "falsche Zeit", "~": "zu schwankend"},
         "overview": "Übersicht", "upstream": "Upstream", "clients_summary": "{} aktiv, {} inaktiv",
+        "http_requests": "HTTP-Anfragen", "all_requests": "Anfragen", "protocol": "Protokoll",
+        "now": "Aktuelle Zeit", "device_clock": "Uhr dieses Geräts", "ahead": "geht {} vor", "behind": "geht {} nach",
+        "in_step": "geht genau", "measured": "über Home Assistant gemessen auf ± {}", "measuring": "Wird gemessen …",
+        "no_time": "chrony gibt gerade keine Zeit aus.",
     },
 }
 
@@ -223,6 +239,10 @@ a.state > svg.go { margin-left: auto; color: var(--secondary-text-color); }
 .dot.on { background: var(--success-color); }
 .sub.memo { max-width: 320px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .list td.act { width: 56px; padding-right: 8px; }
+.list td.proto { white-space: nowrap; }
+.clock { margin-bottom: 8px; }
+.clock .time { font-size: 40px; line-height: 48px; font-variant-numeric: tabular-nums; letter-spacing: .5px; }
+.clock .time .ms { font-size: 24px; color: var(--secondary-text-color); }
 """
 
 # Takes Home Assistant's theme from the page around the ingress frame (same
@@ -360,7 +380,93 @@ SCRIPT = """(() => {
   });
   document.addEventListener("input", (e) => { if (e.target.id === "edit-note") count(); });
   setInterval(() => { if (!document.hidden) update(false); }, REFRESH * 1000);
-})();""".replace("NAMES", json.dumps(THEME_VARS)).replace("REFRESH", str(REFRESH))
+  // The current time. The browser's clock is measured against the server's
+  // (chrony's time) through the ingress: of several round trips the shortest
+  // gives the offset, half of it the error. The clock then ticks with the
+  // browser's monotonic clock plus that offset, in Home Assistant's time zone.
+  const tick = { offset: null, error: null, off: false, zone: undefined, shown: "" };
+  try {
+    const ha = window.parent.document.querySelector("home-assistant");
+    if (ha && ha.hass) tick.zone = ha.hass.config.time_zone;
+  } catch (e) {}
+  const mono = () => performance.timeOrigin + performance.now();
+  let measuring = false;
+  const measure = async () => {
+    if (measuring || document.hidden || !document.querySelector("#clock")) return;
+    measuring = true;
+    try {
+      const url = new URL("now", location.href);
+      let best = null;
+      for (let i = 0; i < SAMPLES; i++) {
+        const t0 = mono();
+        const answer = await fetch(url, { cache: "no-store" });
+        if (!answer.ok) return;
+        const data = await answer.json();
+        const t1 = mono();
+        if (data.time === null) { tick.off = true; return; }
+        const sample = { rtt: t1 - t0, offset: data.time * 1000 - (t0 + t1) / 2 };
+        if (!best || sample.rtt < best.rtt) best = sample;
+      }
+      tick.off = false;
+      tick.offset = best.offset;
+      tick.error = best.rtt / 2;
+    } catch (e) {
+    } finally {
+      measuring = false;
+    }
+  };
+  const formats = {};
+  const format = (lang) => formats[lang] || (formats[lang] = {
+    time: new Intl.DateTimeFormat(lang, { hour: "2-digit", minute: "2-digit", second: "2-digit",
+                                          fractionalSecondDigits: 3, hourCycle: "h23", timeZone: tick.zone }),
+    date: new Intl.DateTimeFormat(lang, { weekday: "long", day: "numeric", month: "long", year: "numeric",
+                                          timeZone: tick.zone }),
+    zone: new Intl.DateTimeFormat(lang, { timeZoneName: "short", timeZone: tick.zone }),
+    number: new Intl.NumberFormat(lang, { maximumFractionDigits: 1 }),
+  });
+  const span = (ms, f) => Math.abs(ms) < 1000 ? f.number.format(Math.abs(ms)) + " ms"
+                                              : f.number.format(Math.abs(ms) / 1000) + " s";
+  const draw = () => {
+    const box = document.querySelector("#clock");
+    if (box) {
+      const f = format(box.dataset.lang);
+      const time = document.querySelector("#clock-time"), date = document.querySelector("#clock-date");
+      const offset = document.querySelector("#clock-offset"), error = document.querySelector("#clock-error");
+      if (tick.off) {
+        time.textContent = "--:--:--";
+        offset.textContent = box.dataset.noTime;
+        error.textContent = "";
+      } else if (tick.offset !== null) {
+        const now = new Date(mono() + tick.offset);
+        const parts = f.time.formatToParts(now);
+        const frac = parts.find((p) => p.type === "fractionalSecond");
+        const main = parts.filter((p) => p.type !== "fractionalSecond").map((p) => p.value).join("").replace(/[.,]$/, "");
+        time.innerHTML = "";
+        time.append(main);
+        const ms = document.createElement("span");
+        ms.className = "ms";
+        ms.textContent = "." + (frac ? frac.value : "000");
+        time.append(ms);
+        const zone = f.zone.formatToParts(now).find((p) => p.type === "timeZoneName");
+        const day = f.date.format(now) + (zone ? " · " + zone.value : "");
+        if (date.textContent !== day) date.textContent = day;
+        // Positive: this device is ahead of the server
+        const ahead = -tick.offset;
+        const text = Math.abs(ahead) <= tick.error ? box.dataset.inStep
+          : (ahead > 0 ? box.dataset.ahead : box.dataset.behind).replace("{}", span(ahead, f));
+        if (offset.textContent !== text) offset.textContent = text;
+        const bound = box.dataset.measured.replace("{}", span(tick.error, f));
+        if (error.textContent !== bound) error.textContent = bound;
+      }
+    }
+    requestAnimationFrame(draw);
+  };
+  requestAnimationFrame(draw);
+  document.addEventListener("DOMContentLoaded", measure);
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) measure(); });
+  setInterval(measure, MEASURE_EVERY * 1000);
+})();""".replace("NAMES", json.dumps(THEME_VARS)).replace("REFRESH", str(REFRESH)).replace(
+    "MEASURE_EVERY", str(MEASURE_EVERY)).replace("SAMPLES", str(SAMPLES))
 
 
 def shared_script() -> str:
@@ -433,6 +539,30 @@ def sync_problem(tracking: dict) -> bool:
 def expected(interval: int | None) -> float:
     """Seconds after its last request within which a client counts as active."""
     return 3 * 2.0 ** (DEFAULT_INTERVAL if interval is None else interval) + GRACE
+
+
+def interval_of(entry: dict) -> int | None:
+    """A client's interval as a power of two: chrony's for NTP, else the one
+    the HTTP time service saw."""
+    if entry.get("interval") is not None:
+        return entry["interval"]
+    return (entry.get("http") or {}).get("interval")
+
+
+def read_http(path: Path) -> dict | None:
+    """The HTTP time service's client log; None before it wrote one."""
+    try:
+        log = json.loads(path.read_text())
+    except FileNotFoundError:
+        return None
+    clients = {}
+    for ip, c in log["clients"].items():
+        if ip in LOCALHOST:
+            continue
+        clients[str(ip)] = {"requests": int(c["requests"]), "dropped": int(c["dropped"]), "last": float(c["last"]),
+                            "interval": None if c.get("interval") is None else int(c["interval"])}
+    return {"run": log.get("run"), "requests": int(log["requests"]), "dropped": int(log["dropped"]),
+            "clients": clients}
 
 
 def clean(value, limit: int) -> str:
@@ -513,8 +643,9 @@ class Clients:
         self.path = path
         self.data: dict[str, dict] = {}
         self.totals: dict = {}
-        # Forgotten clients chrony still knows, with their counters then
+        # Forgotten clients chrony, or the HTTP time service, still knows, with their counters then
         self.forgotten: dict[str, dict] = {}
+        self.forgotten_http: dict[str, dict] = {}
         self._saved = 0.0
         self._warned = 0.0
         try:
@@ -522,6 +653,7 @@ class Clients:
             self.data = dict(stored["clients"])
             self.totals = dict(stored.get("totals") or {})
             self.forgotten = dict(stored.get("forgotten") or {})
+            self.forgotten_http = dict(stored.get("forgotten_http") or {})
         except FileNotFoundError:
             pass
         except (OSError, ValueError, KeyError, TypeError, AttributeError) as err:
@@ -529,7 +661,7 @@ class Clients:
             broken = path.with_name(path.name + ".broken")
             LOGGER.warning("Cannot read %s (%s); starting with no clients, the file is kept as %s",
                            path, err, broken.name)
-            self.data, self.totals, self.forgotten = {}, {}, {}
+            self.data, self.totals, self.forgotten, self.forgotten_http = {}, {}, {}, {}
             try:
                 os.replace(path, broken)
             except OSError as move:
@@ -552,7 +684,7 @@ class Clients:
 
     @staticmethod
     def active(entry: dict, now: float) -> bool:
-        return now - entry["last_seen"] < expected(entry.get("interval"))
+        return now - entry["last_seen"] < expected(interval_of(entry))
 
     def requests_missing(self, now: float) -> bool:
         """Clients asked in the last RECENT, but none within its usual time."""
@@ -571,33 +703,55 @@ class Clients:
         self.save(now)
         return True
 
-    def forget(self, ip: str, live: dict | None, now: float) -> bool:
-        """Drops a client. While chrony still knows it, it comes back only
-        with a new request, counted from then on."""
+    def forget(self, ip: str, live: dict | None, now: float, live_http: dict | None = None) -> bool:
+        """Drops a client. While chrony or the HTTP time service still knows
+        it, it comes back only with a new request, counted from then on."""
         if self.data.pop(ip, None) is None:
             return False
-        if live is not None:
-            self.forgotten[ip] = {key: live[key] for key in COUNTERS}
+        for counters, forgotten in ((live, self.forgotten), (live_http, self.forgotten_http)):
+            if counters is not None:
+                forgotten[ip] = {key: counters[key] for key in COUNTERS}
         self.save(now)
         return True
 
-    def _revive(self, ip: str, values: dict, seen: int) -> dict | None:
-        """The entry of a client not in the list, None while it is forgotten
-        and has not asked again."""
-        gone = self.forgotten.get(ip)
-        if gone is not None and all(values[key] == gone[key] for key in COUNTERS):
-            return None
-        self.forgotten.pop(ip, None)
-        entry = {"first_seen": seen, "last_seen": seen, "name": ""}
-        if gone is not None and all(values[key] >= gone[key] for key in COUNTERS):
+    def _take(self, ip: str, values: dict, seen: int, forgotten: dict, http: bool) -> tuple[dict, dict] | None:
+        """A client's entry and the part that holds the counters of one
+        protocol: the entry itself for NTP, its "http" for HTTP. None while
+        the client is forgotten and has not asked again over this protocol."""
+        gone = forgotten.get(ip)
+        if gone is not None:
+            if all(values[key] == gone[key] for key in COUNTERS):
+                return None
+            del forgotten[ip]
+        entry = self.data.get(ip)
+        if entry is None:
+            entry = self.data[ip] = {"first_seen": seen, "last_seen": seen, "name": ""}
+        target = entry.setdefault("http", {}) if http else entry
+        if gone is not None and "requests" not in target and all(values[key] >= gone[key] for key in COUNTERS):
             # Only what came after it was forgotten counts
             for key in COUNTERS:
-                entry["base_" + key] = -gone[key]
-        return self.data.setdefault(ip, entry)
+                target["base_" + key] = -gone[key]
+        return entry, target
 
     @staticmethod
     def sum(entry: dict, key: str) -> int:
         return entry["base_" + key] + entry[key]
+
+    @classmethod
+    def requests(cls, entry: dict) -> int | None:
+        """A client's requests over NTP and HTTP, None before any was counted."""
+        parts = [cls.sum(part, "requests") for part in (entry, entry.get("http") or {}) if "requests" in part]
+        return sum(parts) if parts else None
+
+    @classmethod
+    def dropped(cls, entry: dict) -> int | None:
+        parts = [cls.sum(part, "dropped") for part in (entry, entry.get("http") or {}) if "dropped" in part]
+        return sum(parts) if parts else None
+
+    @staticmethod
+    def protocols(entry: dict) -> list[str]:
+        """The protocols a client asked over."""
+        return [name for name, part in (("NTP", entry), ("HTTP", entry.get("http") or {})) if "requests" in part]
 
     def total(self, key: str) -> int:
         return self.sum(self.totals, key)
@@ -627,15 +781,50 @@ class Clients:
         # A client without an NTP request only used chronyc
         for c in (c for c in clients if c["last"] is not None):
             seen = round(now - c["last"])
-            entry = self.data.get(c["ip"]) or self._revive(c["ip"], c, seen)
-            if entry is None:
+            taken = self._take(c["ip"], c, seen, self.forgotten, http=False)
+            if taken is None:
                 continue
+            entry = taken[0]
             self.add(entry, c, restarted)
             entry["last_seen"] = max(entry["last_seen"], seen)
             entry["first_seen"] = min(entry["first_seen"], seen)
             entry["name"] = names.get(c["ip"]) or entry["name"]
             if c["interval"] is not None:
                 entry["interval"] = c["interval"]
+        self.tidy(now)
+
+    def update_http(self, http: dict, names: dict[str, str], now: float) -> None:
+        """Takes in the HTTP time service's client log, like chrony's."""
+        t = self.totals.setdefault("http", {})
+        t.setdefault("since", round(now))
+        run = http.get("run")
+        restarted = run is not None and t.get("run") not in (None, run)
+        if run is not None:
+            t["run"] = run
+        self.add(t, http, restarted)
+        live = http["clients"]
+        if restarted:
+            for ip, entry in self.data.items():
+                part = entry.get("http")
+                if ip not in live and part and "requests" in part:
+                    self.add(part, {key: 0 for key in COUNTERS}, True)
+        for ip in [ip for ip in self.forgotten_http if restarted or ip not in live]:
+            del self.forgotten_http[ip]
+        for ip, c in live.items():
+            seen = round(min(c["last"], now))
+            taken = self._take(ip, c, seen, self.forgotten_http, http=True)
+            if taken is None:
+                continue
+            entry, part = taken
+            self.add(part, c, restarted)
+            entry["last_seen"] = max(entry["last_seen"], seen)
+            entry["first_seen"] = min(entry["first_seen"], seen)
+            entry["name"] = names.get(ip) or entry["name"]
+            if c["interval"] is not None:
+                part["interval"] = c["interval"]
+
+    def tidy(self, now: float) -> None:
+        """Drops clients away too long and beyond the limit; saves now and then."""
         # A client with a name or note given on the page stays until it is forgotten there
         for ip in [ip for ip, e in self.data.items()
                    if now - e["last_seen"] > FORGET_AFTER and not self.kept(e)]:
@@ -656,8 +845,7 @@ class Clients:
         if excess <= 0:
             return
         drop = sorted((ip for ip, e in self.data.items() if not self.kept(e)),
-                      key=lambda ip: (self.sum(self.data[ip], "requests") > 1 if "requests" in self.data[ip] else False,
-                                      self.data[ip]["last_seen"]))[:excess]
+                      key=lambda ip: ((self.requests(self.data[ip]) or 0) > 1, self.data[ip]["last_seen"]))[:excess]
         for ip in drop:
             del self.data[ip]
         if now - self._warned >= WARN_EVERY:
@@ -669,8 +857,8 @@ class Clients:
         """Writes the store whole or not at all; the caller holds the state's lock."""
         tmp = None
         try:
-            text = json.dumps({"clients": self.data, "totals": self.totals, "forgotten": self.forgotten},
-                              sort_keys=True)
+            text = json.dumps({"clients": self.data, "totals": self.totals, "forgotten": self.forgotten,
+                               "forgotten_http": self.forgotten_http}, sort_keys=True)
             fd, tmp = tempfile.mkstemp(dir=self.path.parent, prefix=self.path.name + ".", suffix=".tmp")
             with os.fdopen(fd, "w") as out:
                 out.write(text)
@@ -691,10 +879,12 @@ class State:
     """The latest read of chrony, renewed in the background every POLL seconds."""
 
     def __init__(self, clients: Clients, names: Names | None = None, read=read_chrony, clock=time.time,
-                 status: Path | None = None) -> None:
+                 status: Path | None = None, http_log: Path | None = None) -> None:
         self.clients = clients
         self.names = names or Names()
         self._read = read
+        self._http_log = http_log
+        self.http: dict | None = None
         self._clock = clock
         self._status = status
         self.lock = threading.Lock()
@@ -718,9 +908,11 @@ class State:
             chrony = None
         else:
             self._recovered("chronyc", "chronyc answers again")
+        http = self._read_http()
         # Names known so far; new ones are looked up in the background
         names = {c["ip"]: self.names.get(c["ip"], now) for c in (chrony or {}).get("clients", [])
                  if c["last"] is not None}
+        names.update({ip: self.names.get(ip, now) for ip in (http or {}).get("clients", {})})
         if chrony is not None:
             # chronyc's CSV output has addresses only, also for the upstream servers
             for source in chrony["sources"]:
@@ -728,14 +920,40 @@ class State:
             refname = chrony["tracking"]["refname"]
             chrony["tracking"]["host"] = self.names.get(refname, now) if refname else ""
         with self.lock:
-            self.chrony, self.at = chrony, now
+            self.chrony, self.at, self.http = chrony, now, http
+            if http is not None:
+                self.clients.update_http(http, names, now)
             if chrony is not None:
                 restarted = self.clients.count(chrony, now)
                 self.clients.update(chrony["clients"], names, now, restarted)
+            elif http is not None:
+                self.clients.tidy(now)
             # Judged from the kept clients also while chronyc fails: a chronyd
             # that does not answer serves nobody either
             missing = self.clients.requests_missing(now)
         self._write_status({"at": round(now), "requests_missing": missing})
+
+    def _read_http(self) -> dict | None:
+        if self._http_log is None:
+            return None
+        try:
+            http = read_http(self._http_log)
+        except (OSError, ValueError, KeyError, TypeError, AttributeError) as err:
+            self._failed("http", "Cannot read %s (%s)", self._http_log, err)
+            return None
+        self._recovered("http", "%s readable again", self._http_log)
+        return http
+
+    def now(self) -> dict:
+        """chrony's time for the page's clock: the host clock plus chrony's
+        correction of its latest read."""
+        with self.lock:
+            chrony = self.chrony
+        tracking = (chrony or {}).get("tracking")
+        if tracking is None or tracking["offset"] is None or (
+                sync_problem(tracking) and tracking["refid"] != LOCAL_CLOCK):
+            return {"time": None}
+        return {"time": self._clock() + tracking["offset"], "stratum": tracking["stratum"]}
 
     def _write_status(self, status: dict) -> None:
         if self._status is None:
@@ -745,7 +963,7 @@ class State:
             tmp.write_text(json.dumps(status))
             os.replace(tmp, self._status)
         except OSError as err:
-            # Without it the sensor NTP requests missing is unknown
+            # Without it the sensor Requests missing is unknown
             self._failed("status", "Cannot write %s: %s", self._status, err)
         else:
             self._recovered("status", "%s written again", self._status)
@@ -772,7 +990,8 @@ class State:
                                          clean(body.get("note", ""), NOTE_MAX), now)
             elif action == "forget":
                 live = next((c for c in (self.chrony or {}).get("clients", []) if c["ip"] == ip), None)
-                done = self.clients.forget(ip, live, now)
+                live_http = (self.http or {}).get("clients", {}).get(ip)
+                done = self.clients.forget(ip, live, now, live_http)
             else:
                 raise ValueError("unknown action")
         return 204 if done else 404
@@ -868,7 +1087,7 @@ def card(title: str | None, content: str, padded: bool = True, attrs: str = "") 
     return f'<div class="card"{attrs}>{head}{inner}</div>'
 
 
-def status_card(f: Format, chrony: dict, clients: Clients, now: float) -> str:
+def status_card(f: Format, chrony: dict, clients: Clients, now: float, http: dict | None = None) -> str:
     t, tr = f.t, chrony["tracking"]
     reference = tr.get("host") or tr["refname"] or tr["refid"]
     go = icon("chevron", "go")
@@ -900,7 +1119,33 @@ def status_card(f: Format, chrony: dict, clients: Clients, now: float) -> str:
                         f'{esc(t["since_start"].format(f.int(chrony["requests"])))}</span>'),
         (t["dropped"], f'{esc(f.int(clients.total("dropped")))}<span class="sub">{esc(since)} · '
                        f'{esc(t["since_start"].format(f.int(chrony["dropped"])))}</span>'),
-    ]))
+    ] + http_rows(f, clients, http)))
+
+
+def http_rows(f: Format, clients: Clients, http: dict | None) -> list[tuple[str, str]]:
+    """Requests over HTTP, once the HTTP time service has written its log."""
+    t, totals = f.t, clients.totals.get("http")
+    if not totals or "requests" not in totals:
+        return []
+    since = t["since"].format(f.day(totals["since"]))
+    started = (f' · {esc(t["since_start"].format(f.int(http["requests"])))}' if http else "")
+    dropped = Clients.sum(totals, "dropped")
+    return [(t["http_requests"], f'{esc(f.int(Clients.sum(totals, "requests")))}<span class="sub">{esc(since)}{started}'
+                                 + (f' · {esc(t["dropped"])} {esc(f.int(dropped))}' if dropped else "") + "</span>")]
+
+
+def clock_card(f: Format) -> str:
+    """The current time, ticking in the browser: the script measures the
+    browser's clock against the server's several times through the ingress
+    and keeps the measurement with the shortest round trip."""
+    t = f.t
+    return card(t["now"], (f'<div class="clock" id="clock" data-ahead="{esc(t["ahead"])}" data-behind="{esc(t["behind"])}"'
+                           f' data-in-step="{esc(t["in_step"])}" data-measured="{esc(t["measured"])}"'
+                           f' data-no-time="{esc(t["no_time"])}" data-lang="{f.lang}">'
+                           f'<div class="time" id="clock-time">--:--:--<span class="ms">.---</span></div>'
+                           f'<div class="sub" id="clock-date"></div></div>'
+                           + kv([(t["device_clock"], f'<span id="clock-offset">{esc(t["measuring"])}</span>'
+                                                     f'<span class="sub" id="clock-error"></span>')])))
 
 
 def accuracy_card(f: Format, chrony: dict) -> str:
@@ -957,11 +1202,13 @@ def clients_card(f: Format, state: State, now: float) -> str:
         shown = alias or short_name(name) or ip
         text = " ".join((alias, name, ip, note)).lower()
         last = f'{esc(f.ago(ago))}<span class="sub">{esc(f.when(last_seen))}</span>'
-        counted = "requests" in entry
-        requests = esc(f.int(Clients.sum(entry, "requests"))) if counted else t["unknown"]
-        dropped = esc(f.int(Clients.sum(entry, "dropped"))) if counted else t["unknown"]
-        # chrony's interval while it knows the client, else the last one it knew
-        exponent = c["interval"] if c and c["interval"] is not None else entry.get("interval")
+        all_requests, all_dropped = Clients.requests(entry), Clients.dropped(entry)
+        requests = t["unknown"] if all_requests is None else esc(f.int(all_requests))
+        dropped = t["unknown"] if all_dropped is None else esc(f.int(all_dropped))
+        protocols = Clients.protocols(entry)
+        text += " " + " ".join(protocols).lower()
+        # chrony's interval while it knows the client, else the last one known
+        exponent = c["interval"] if c and c["interval"] is not None else interval_of(entry)
         interval = esc(f.log2(exponent))
         sub = f'<span class="sub">{esc(ip)}</span>' if shown != ip else ""
         sub += f'<span class="sub memo" title="{esc(note)}">{esc(note)}</span>' if note else ""
@@ -971,25 +1218,28 @@ def clients_card(f: Format, state: State, now: float) -> str:
             f'<tr data-name="{esc(shown.lower())}" data-text="{esc(text)}"'
             f' data-addr="{esc(ip)}" data-alias="{esc(alias)}" data-note="{esc(note)}" data-dns="{esc(short_name(name))}"'
             f' data-state="{"active" if is_active else "inactive"}"'
-            f' data-requests="{Clients.sum(entry, "requests") if counted else ""}"'
-            f' data-dropped="{Clients.sum(entry, "dropped") if counted else ""}"'
+            f' data-requests="{"" if all_requests is None else all_requests}"'
+            f' data-dropped="{"" if all_dropped is None else all_dropped}"'
+            f' data-protocol="{esc(" ".join(protocols).lower())}"'
             f' data-interval="{"" if exponent is None else exponent}"'
             f' data-last="{round(ago)}" data-first="{entry["first_seen"]}">'
             f'<td><span class="dot{" on" if is_active else ""}" title="{dot}"></span></td>'
             f'<td title="{esc(name or ip)}">{esc(shown)}{sub}</td>'
+            f'<td class="proto">{esc(", ".join(protocols)) or t["unknown"]}</td>'
             f'<td class="n">{requests}</td><td class="n opt">{dropped}</td><td class="n opt">{interval}</td>'
             f'<td class="n">{last}</td><td class="n opt">{esc(f.when(entry["first_seen"]))}</td>'
             f'<td class="act"><button class="icon-button small edit" title="{esc(t["edit"])}"'
             f' aria-label="{esc(t["edit"])}">{icon("pencil")}</button></td></tr>')
     total = len(rows)
-    empty = "" if rows else f'<tr><td colspan="8" class="muted">{esc(t["no_clients"])}</td></tr>'
-    rows.append(f'<tr class="none" hidden><td colspan="8" class="muted">{esc(t["no_match"])}</td></tr>')
+    empty = "" if rows else f'<tr><td colspan="9" class="muted">{esc(t["no_clients"])}</td></tr>'
+    rows.append(f'<tr class="none" hidden><td colspan="9" class="muted">{esc(t["no_match"])}</td></tr>')
     chips = "".join(f'<button class="chip{" on" if key == "all" else ""}" data-show="{key}">{esc(t[key])} · {n}</button>'
                     for key, n in (("all", total), ("active", active), ("inactive", total - active)))
     toolbar = (f'<div class="toolbar">{chips}<label class="search">{icon("search")}'
                f'<input id="q" type="search" placeholder="{esc(t["search"])}" autocomplete="off"></label></div>')
     head = (f'<thead><tr><th></th><th data-sort="name">{esc(t["name"])}</th>'
-            f'<th class="n" data-sort="requests">{esc(t["requests"])}</th>'
+            f'<th data-sort="protocol">{esc(t["protocol"])}</th>'
+            f'<th class="n" data-sort="requests">{esc(t["all_requests"])}</th>'
             f'<th class="n opt" data-sort="dropped">{esc(t["dropped"])}</th>'
             f'<th class="n opt" data-sort="interval">{esc(t["interval"])}</th>'
             f'<th class="n" data-sort="last">{esc(t["last_seen"])}</th>'
@@ -1048,7 +1298,7 @@ def render(state: State, lang: str, slug: str | None, now: float | None = None, 
         elif tab == "upstream":
             body = f'<div class="cards">{sources_card(f, chrony)}{accuracy_card(f, chrony)}</div>'
         else:
-            body = f'<div class="cards">{status_card(f, chrony, state.clients, now)}</div>'
+            body = f'<div class="cards">{clock_card(f)}{status_card(f, chrony, state.clients, now, state.http)}</div>'
     # The same header on every page of the apps: when the data were read (the
     # time of the request before the first read), refresh, and the settings,
     # which are Home Assistant's own page, outside the ingress frame
@@ -1094,7 +1344,7 @@ def handler(state: State, slug: str | None, allowed: set[str], version: str | No
         def _refused(self) -> bool:
             if allowed and self.client_address[0] not in allowed:
                 self._send(403, "text/plain", b"only through Home Assistant")
-            elif self.path.split("?", 1)[0] not in ("/", "/icon.png"):
+            elif self.path.split("?", 1)[0] not in ("/", "/icon.png", "/now"):
                 self._send(404, "text/plain", b"not found")
             else:
                 return False
@@ -1102,6 +1352,9 @@ def handler(state: State, slug: str | None, allowed: set[str], version: str | No
 
         def do_GET(self) -> None:  # noqa: N802 (the standard library's name)
             if self._refused():
+                return
+            if self.path.split("?", 1)[0] == "/now":
+                self._send(200, "application/json", json.dumps(state.now()).encode())
                 return
             if self.path.split("?", 1)[0] == "/icon.png":
                 if APP_ICON is None:
@@ -1159,11 +1412,11 @@ def log_level(name: str | None) -> int:
 def main() -> None:
     logging.basicConfig(level=log_level(os.environ.get("LOG_LEVEL")),
                         format="[%(asctime)s] %(levelname)s: %(message)s", datefmt="%H:%M:%S", stream=sys.stdout)
-    # The app's slug, e.g. a1b2c3d4_chrony_ntp; the Supervisor names the container's host after it
+    # The app's slug, e.g. a1b2c3d4_time_server; the Supervisor names the container's host after it
     slug = os.environ.get("HOSTNAME", "").replace("-", "_") or None
     # The version from config.yaml, passed by the Supervisor when it builds the image
     version = os.environ.get("APP_VERSION") or None
-    state = State(Clients(STORE), status=STATUS)
+    state = State(Clients(STORE), status=STATUS, http_log=HTTP_LOG)
     threading.Thread(target=state.run, daemon=True).start()
     # s6 stops the service with TERM; leave through finally to save the store
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))

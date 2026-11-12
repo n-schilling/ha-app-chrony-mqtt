@@ -1,8 +1,8 @@
 """The Page check, and the screenshots in docs/screenshots.
 
 Starts the built image twice in a throwaway Docker network: once as the app,
-its page on made-up data (tests/page/demo.py, host name a1b2c3d4-chrony-ntp,
-so the slug is a1b2c3d4_chrony_ntp), once as a stand-in for Home Assistant at
+its page on made-up data (tests/page/demo.py, host name a1b2c3d4-time-server,
+so the slug is a1b2c3d4_time_server), once as a stand-in for Home Assistant at
 the ingress proxy's address 172.30.32.2 (tests/page/ingress.py), which passes
 the page on under /api/hassio_ingress/<token>/ and holds it in a frame. A
 headless browser then opens the page as Home Assistant's ingress would and
@@ -13,8 +13,8 @@ checks, in light, dark and at phone width, in English and German:
   active; tab, reload and back in Home Assistant's frame;
 - the header (STANDARD.md, section 7): the icon, the name, then the stamp "As of
   HH:MM:SS", the refresh button and the settings button, which leads to
-  /config/app/a1b2c3d4_chrony_ntp/config outside the frame (target _top);
-- the version line "Chrony NTP + MQTT <version>" as the last element of body;
+  /config/app/a1b2c3d4_time_server/config outside the frame (target _top);
+- the version line "Time Server <version>" as the last element of body;
 - no console errors, no failed scripts and no Content Security Policy violations;
 - refresh, the client list's filter and the edit dialog work, and nothing is
   wider than a phone;
@@ -24,7 +24,7 @@ checks, in light, dark and at phone width, in English and German:
 
 Then it takes the screenshots, unless --check is given.
 
-    scripts/screenshots.py [--check] [--image chrony-mqtt:check] [--build]
+    scripts/screenshots.py [--check] [--image time-server:check] [--build]
     uv run --with playwright==1.58.0 python scripts/screenshots.py --build
 
 --build builds the image first (with the version from config.yaml). Uses the
@@ -47,14 +47,14 @@ from playwright.sync_api import Error, Frame, Page, sync_playwright
 
 ROOT = Path(__file__).resolve().parents[1]
 OUT = ROOT / "docs/screenshots"
-VERSION = re.search(r'^version: "?([^"\n]+)"?$', (ROOT / "chrony_ntp/config.yaml").read_text(), re.M)[1]
-NAME = "Chrony NTP + MQTT"
-HOST = "a1b2c3d4-chrony-ntp"
-SLUG = "a1b2c3d4_chrony_ntp"
+VERSION = re.search(r'^version: "?([^"\n]+)"?$', (ROOT / "time_server/config.yaml").read_text(), re.M)[1]
+NAME = "Time Server"
+HOST = "a1b2c3d4-time-server"
+SLUG = "a1b2c3d4_time_server"
 INGRESS = "/api/hassio_ingress/demo-token/"
 NET, APP, PROXY = "chrony-page-check", "chrony-page-check-app", "chrony-page-check-ingress"
-TEXTS = {"en-US": ("Chrony NTP + MQTT", "As of", "Refresh", "Settings"),
-         "de-DE": ("Chrony NTP + MQTT", "Stand", "Aktualisieren", "Einstellungen")}
+TEXTS = {"en-US": ("Time Server", "As of", "Refresh", "Settings"),
+         "de-DE": ("Time Server", "Stand", "Aktualisieren", "Einstellungen")}
 # The views (tabs in the header), where each one is, and their labels
 TABS = (("overview", "?"), ("upstream", "?tab=upstream"), ("clients", "?tab=clients"))
 TAB_LABELS = {"en-US": ["Overview", "Upstream", "Clients"], "de-DE": ["Übersicht", "Upstream", "Clients"]}
@@ -326,12 +326,12 @@ def in_home_assistant(p: Page, base: str, lang: str) -> tuple[Frame, int]:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--check", action="store_true", help="check only, take no screenshots")
-    parser.add_argument("--image", default="chrony-mqtt:check", help="the built image (default chrony-mqtt:check)")
+    parser.add_argument("--image", default="time-server:check", help="the built image (default time-server:check)")
     parser.add_argument("--build", action="store_true", help="build the image first")
     args = parser.parse_args()
     if args.build:
         subprocess.run(["docker", "build", "-q", "--build-arg", f"BUILD_VERSION={VERSION}", "-t", args.image,
-                        str(ROOT / "chrony_ntp")], check=True, stdout=subprocess.DEVNULL)
+                        str(ROOT / "time_server")], check=True, stdout=subprocess.DEVNULL)
     if not args.check:
         OUT.mkdir(parents=True, exist_ok=True)
     try:

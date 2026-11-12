@@ -28,3 +28,4 @@ configuration:
     description: "Wie viel die App in ihr Log schreibt: debug, info, warning oder error."
 network:
   123/udp: NTP (Network Time Protocol)
+  8080/tcp: Zeit über HTTP (aus, bis ein Port eingetragen ist)
