@@ -70,7 +70,7 @@ The web page is a single Python module on the standard library, [`chrony_web.py`
 scripts/check.sh
 ```
 
-`scripts/check.sh` runs what CI runs: the changelog check, shellcheck, ruff, the image build, the tests inside the built image, the Page check, and the tests against a Mosquitto broker in Docker (`--no-broker` skips them). It needs Docker and [uv](https://docs.astral.sh/uv/); shellcheck and ruff come from `PATH`, else from Docker and uv.
+`scripts/check.sh` runs what CI runs: the changelog check, shellcheck, ruff, the image build, the tests inside the built image, the Page check, and the tests against a Mosquitto broker in Docker (`--no-broker` skips them). It needs Docker and [uv](https://docs.astral.sh/uv/); shellcheck and ruff come from `PATH`, else from Docker and uv. The page check is not part of CI: run `scripts/check.sh` before a release that changes the page.
 
 The Page check, `scripts/screenshots.py`, starts the built image with made-up data next to a stand-in for Home Assistant's ingress proxy (at its address 172.30.32.2, path prefix `/api/hassio_ingress/<token>/`, the page in a frame) and opens it in headless Chromium, light, dark and at phone width, in English and German. It checks the header every app page shares (name; stamp "As of HH:MM:SS", refresh, and the settings gear, which opens the app's configuration outside the frame), the version line, that the page takes Home Assistant's language over the browser's (a stand-in for its frontend in German, English and French around the frame, reloading once), and that there are no console errors or Content Security Policy violations. Without `--check` it also takes the screenshots in `docs/screenshots`:
 
