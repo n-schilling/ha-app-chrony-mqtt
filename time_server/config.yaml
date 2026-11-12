@@ -1,5 +1,5 @@
 name: Time Server
-version: "3.0.0"
+version: "3.1.0"
 slug: time_server
 description: Local time server for NTP and HTTP (chrony), with a web page of its state and clients and problem sensors via MQTT discovery
 url: https://github.com/n-schilling/ha-app-time-server

@@ -45,7 +45,9 @@ CLIENTS = {
     "192.0.2.53": ("camera-door.lan", 10, 650, 3398, 0, 27, "", ""),
     "198.51.100.7": ("laptop.lan", 10, 9 * 3600, 260, 0, 12, "", ""),
     "2001:db8::17": ("", 8, 30000, 512, 0, 3, "", ""),
+    "203.0.113.50": ("tv-guest.lan", 10, 3 * 86400, 41, 0, 9, "Guest TV", "Blocked: should not take the house's time"),
 }
+BLOCKED = {"203.0.113.50"}
 # Clients of the HTTP time service: address: (reverse DNS name, seconds since
 # the last request, requests, interval log2); one also asks over NTP
 HTTP_CLIENTS = {
@@ -74,7 +76,9 @@ def chronyc(folder: Path) -> None:
     (folder / "clients.csv").write_text("127.0.0.1,4,0,-,-,10,0,0,0,-\n" + "".join(
         f"{ip},{c[3] % 300},0,{c[1]},-,{c[2]},0,0,0,-\n" for ip, c in CLIENTS.items() if c[2] < 6 * 3600))
     stub = folder / "chronyc"
-    stub.write_text(f'#!/bin/sh\nfor a; do what=$a; done\nexec cat "{folder}/$what.csv"\n')
+    # deny and allow (blocking on the page) answer like chronyd
+    stub.write_text(f'#!/bin/sh\ncase " $* " in *" deny "*|*" allow "*) echo "200 OK"; exit 0 ;; esac\n'
+                    f'for a; do what=$a; done\nexec cat "{folder}/$what.csv"\n')
     stub.chmod(0o755)
     os.environ["PATH"] = f"{folder}:{os.environ['PATH']}"
 
@@ -90,6 +94,8 @@ def store(path: Path) -> None:
             entry["alias"] = alias
         if note:
             entry["note"] = note
+        if ip in BLOCKED:
+            entry["blocked"] = True
         clients[ip] = entry
     totals = {"since": round(NOW - 41 * DAY), "base_requests": 21890, "base_dropped": 5,
               "requests": 4211, "dropped": 2}

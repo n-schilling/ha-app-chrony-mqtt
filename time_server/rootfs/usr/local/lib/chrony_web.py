@@ -3,6 +3,11 @@ Assistant's settings: the current time, chrony's state, its upstream sources
 and every client that took time from it, over NTP or HTTP, with the time of
 its last request.
 
+A client blocked on the page gets no time any more: chronyd denies its address
+(chronyc deny, given again to every new chronyd) and the HTTP time service
+closes its connections (BLOCKED). A blocked client stays in the list until it
+is unblocked.
+
 The HTTP time service (time_http.py) runs apart, as a user of its own, and
 writes what each client asked to HTTP_LOG; the page takes it in like chrony's
 client log, with counters of their own per client.
@@ -33,6 +38,7 @@ from __future__ import annotations
 import contextlib
 import functools
 import html
+import ipaddress
 import json
 import logging
 import os
@@ -59,6 +65,10 @@ APP_NAME = "Time Server"
 STORE = Path("/data/web/clients.json")
 STATUS = Path("/run/chrony-web/status.json")  # read by the key figure publisher
 HTTP_LOG = Path("/run/time-http/clients.json")  # written by the HTTP time service
+# The blocked addresses, read by the HTTP time service; chronyd learns them by chronyc
+BLOCKED = Path("/run/chrony-web/blocked.json")
+ALLOWED = Path("/run/time-http/allowed")  # the networks chrony serves, written by init-chrony
+BLOCK_MAX = 256          # addresses blocked at most
 PIDFILE = Path("/run/chrony/chronyd.pid")
 COUNTERS = ("requests", "dropped")
 POLL = 15                # seconds between two reads of chronyc
@@ -128,6 +138,9 @@ TEXT = {
         "now": "Current time", "device_clock": "This device's clock", "ahead": "{} ahead", "behind": "{} behind",
         "in_step": "in step", "measured": "measured through Home Assistant to ± {}", "measuring": "Measuring …",
         "no_time": "chrony hands out no time right now.",
+        "block": "Block", "unblock": "Unblock", "blocked": "Blocked",
+        "block_confirm": "Block this client? It gets no time any more, over NTP and HTTP, until you unblock it.",
+        "blocked_note": "Blocked: gets no time",
     },
     "de": {
         "title": APP_NAME, "settings": "Einstellungen", "refresh": "Aktualisieren", "as_of": "Stand {}", "status": "Status", "accuracy": "Genauigkeit", "synced": "Synchron mit {}",
@@ -158,6 +171,9 @@ TEXT = {
         "now": "Aktuelle Zeit", "device_clock": "Uhr dieses Geräts", "ahead": "geht {} vor", "behind": "geht {} nach",
         "in_step": "geht genau", "measured": "über Home Assistant gemessen auf ± {}", "measuring": "Wird gemessen …",
         "no_time": "chrony gibt gerade keine Zeit aus.",
+        "block": "Blockieren", "unblock": "Freigeben", "blocked": "Blockiert",
+        "block_confirm": "Diesen Client blockieren? Er bekommt keine Zeit mehr, weder per NTP noch per HTTP, bis du ihn freigibst.",
+        "blocked_note": "Blockiert: bekommt keine Zeit",
     },
 }
 
@@ -240,6 +256,8 @@ a.state > svg.go { margin-left: auto; color: var(--secondary-text-color); }
 .sub.memo { max-width: 320px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .list td.act { width: 56px; padding-right: 8px; }
 .list td.proto { white-space: nowrap; }
+.dot.blocked { background: var(--error-color); }
+.sub.blocked { color: var(--error-color); }
 .clock { margin-bottom: 8px; }
 .clock .time { font-size: 40px; line-height: 48px; font-variant-numeric: tabular-nums; letter-spacing: .5px; }
 .clock .time .ms { font-size: 24px; color: var(--secondary-text-color); }
@@ -365,11 +383,20 @@ SCRIPT = """(() => {
       field("name").placeholder = row.dataset.dns || row.dataset.addr;
       field("note").value = row.dataset.note;
       field("error").textContent = "";
+      const blocked = row.dataset.blocked === "1", block = field("block");
+      d.dataset.blocked = blocked ? "1" : "";
+      block.textContent = blocked ? block.dataset.unblock : block.dataset.block;
+      // A blocked client stays listed until it is unblocked
+      field("forget").style.display = blocked ? "none" : "";
       count();
       d.showModal();
       field("name").focus();
     }
     if (e.target.closest("#edit-forget") && confirm(field("forget").dataset.confirm)) change({ action: "forget" });
+    if (e.target.closest("#edit-block")) {
+      if (d.dataset.blocked === "1") change({ action: "unblock" });
+      else if (confirm(field("block").dataset.confirm)) change({ action: "block" });
+    }
     if (e.target.closest("#edit-cancel")) d.close();
   });
   // Save, also with Enter in the name
@@ -549,6 +576,28 @@ def interval_of(entry: dict) -> int | None:
     return (entry.get("http") or {}).get("interval")
 
 
+def address(ip: str) -> str:
+    """An address in its one written form; ValueError for anything else."""
+    return str(ipaddress.ip_address(ip))
+
+
+def control(*args: str) -> None:
+    """A command to chronyd over its command socket, which admits this user."""
+    subprocess.run(["chronyc", "-n", *args], capture_output=True, text=True, timeout=10, check=True)
+
+
+def read_allowed(path: Path) -> list:
+    try:
+        lines = path.read_text().split()
+    except OSError:
+        return []
+    networks = []
+    for line in lines:
+        with contextlib.suppress(ValueError):
+            networks.append(ipaddress.ip_network(line, strict=False))
+    return networks
+
+
 def read_http(path: Path) -> dict | None:
     """The HTTP time service's client log; None before it wrote one."""
     try:
@@ -688,7 +737,7 @@ class Clients:
 
     def requests_missing(self, now: float) -> bool:
         """Clients asked in the last RECENT, but none within its usual time."""
-        recent = [e for e in self.data.values() if now - e["last_seen"] < RECENT]
+        recent = [e for e in self.data.values() if now - e["last_seen"] < RECENT and not e.get("blocked")]
         return bool(recent) and not any(self.active(e, now) for e in recent)
 
     def edit(self, ip: str, alias: str, note: str, now: float) -> bool:
@@ -706,8 +755,9 @@ class Clients:
     def forget(self, ip: str, live: dict | None, now: float, live_http: dict | None = None) -> bool:
         """Drops a client. While chrony or the HTTP time service still knows
         it, it comes back only with a new request, counted from then on."""
-        if self.data.pop(ip, None) is None:
+        if ip not in self.data or self.data[ip].get("blocked"):
             return False
+        del self.data[ip]
         for counters, forgotten in ((live, self.forgotten), (live_http, self.forgotten_http)):
             if counters is not None:
                 forgotten[ip] = {key: counters[key] for key in COUNTERS}
@@ -835,8 +885,12 @@ class Clients:
 
     @staticmethod
     def kept(entry: dict) -> bool:
-        """A client with a name or note given on the page stays until it is forgotten there."""
-        return bool(entry.get("alias") or entry.get("note"))
+        """A client with a name or note given on the page stays until it is
+        forgotten there, a blocked one until it is unblocked."""
+        return bool(entry.get("alias") or entry.get("note") or entry.get("blocked"))
+
+    def blocked(self) -> list[str]:
+        return sorted(ip for ip, e in self.data.items() if e.get("blocked"))
 
     def _limit(self, now: float) -> None:
         """At most MAX_CLIENTS: beyond that the clients that asked only once
@@ -879,8 +933,14 @@ class State:
     """The latest read of chrony, renewed in the background every POLL seconds."""
 
     def __init__(self, clients: Clients, names: Names | None = None, read=read_chrony, clock=time.time,
-                 status: Path | None = None, http_log: Path | None = None) -> None:
+                 status: Path | None = None, http_log: Path | None = None, blocked: Path | None = None,
+                 allowed: Path | None = None, command=control) -> None:
         self.clients = clients
+        self._blocked = blocked
+        self._allowed = allowed
+        self._command = command
+        # The chronyd that knows the blocked addresses
+        self._denied_run: str | None = None
         self.names = names or Names()
         self._read = read
         self._http_log = http_log
@@ -932,6 +992,66 @@ class State:
             # that does not answer serves nobody either
             missing = self.clients.requests_missing(now)
         self._write_status({"at": round(now), "requests_missing": missing})
+        if chrony is not None and (chrony.get("run") is None or chrony.get("run") != self._denied_run):
+            self._deny_all(chrony.get("run"))
+
+    def _deny_all(self, run: str | None) -> None:
+        """Gives a new chronyd the blocked addresses; it starts without them."""
+        with self.lock:
+            blocked = self.clients.blocked()
+        try:
+            for ip in blocked:
+                self._command("deny", ip)
+        except (OSError, subprocess.SubprocessError) as err:
+            self._failed("deny", "Cannot block clients in chronyd (%s), retrying", err)
+            return
+        self._recovered("deny", "Blocked clients given to chronyd again")
+        self._denied_run = run
+        self._write_blocked(blocked)
+
+    def _write_blocked(self, blocked: list[str]) -> None:
+        if self._blocked is None:
+            return
+        tmp = self._blocked.with_suffix(".tmp")
+        try:
+            tmp.write_text(json.dumps(blocked))
+            os.replace(tmp, self._blocked)
+        except OSError as err:
+            self._failed("blocked", "Cannot write %s: %s", self._blocked, err)
+        else:
+            self._recovered("blocked", "%s written again", self._blocked)
+
+    def block(self, ip: str, on: bool) -> int:
+        """Blocks or unblocks a client in chronyd and for HTTP; the HTTP status."""
+        with self.lock:
+            entry = self.clients.data.get(ip)
+            if entry is None:
+                return 404
+            if bool(entry.get("blocked")) == on:
+                return 204
+            if on and len(self.clients.blocked()) >= BLOCK_MAX:
+                return 409
+        try:
+            if on:
+                self._command("deny", ip)
+            elif any(ipaddress.ip_address(ip) in n for n in read_allowed(self._allowed or ALLOWED)
+                     if n.version == ipaddress.ip_address(ip).version):
+                # chronyd has no way to drop a deny: an allow for the one address
+                # undoes it, given only where the configuration serves it anyway
+                self._command("allow", ip)
+        except (OSError, subprocess.SubprocessError) as err:
+            LOGGER.warning("Cannot %s %s in chronyd: %s", "block" if on else "unblock", ip, err)
+            return 503
+        with self.lock:
+            if on:
+                entry["blocked"] = True
+            else:
+                entry.pop("blocked", None)
+            self.clients.save(self._clock())
+            blocked = self.clients.blocked()
+        self._write_blocked(blocked)
+        LOGGER.info("%s %s", "Blocked" if on else "Unblocked", ip)
+        return 204
 
     def _read_http(self) -> dict | None:
         if self._http_log is None:
@@ -983,12 +1103,16 @@ class State:
         ip, action = body.get("ip"), body.get("action")
         if not isinstance(ip, str):
             raise ValueError("address expected")
+        if action in ("block", "unblock"):
+            return self.block(address(ip), action == "block")
         now = self._clock()
         with self.lock:
             if action == "edit":
                 done = self.clients.edit(ip, clean(body.get("name", ""), NAME_MAX),
                                          clean(body.get("note", ""), NOTE_MAX), now)
             elif action == "forget":
+                if (self.clients.data.get(ip) or {}).get("blocked"):
+                    return 409
                 live = next((c for c in (self.chrony or {}).get("clients", []) if c["ip"] == ip), None)
                 live_http = (self.http or {}).get("clients", {}).get(ip)
                 done = self.clients.forget(ip, live, now, live_http)
@@ -1104,7 +1228,7 @@ def status_card(f: Format, chrony: dict, clients: Clients, now: float, http: dic
         state += (f'<a class="state bad" href="?tab=clients">{icon("alert")}'
                   f'{esc(t["missing"].format(f.ago(now - last)))}{go}</a>')
     else:
-        active = sum(Clients.active(e, now) for e in clients.data.values())
+        active = sum(Clients.active(e, now) and not e.get("blocked") for e in clients.data.values())
         state += (f'<a class="state muted" href="?tab=clients">{icon("clients")}{esc(t["clients"])}: '
                   f'{esc(t["clients_summary"].format(active, len(clients.data) - active))}{go}</a>')
     since = t["since"].format(f.day(clients.totals["since"]))
@@ -1191,13 +1315,15 @@ def clients_card(f: Format, state: State, now: float) -> str:
     t = f.t
     live = {c["ip"]: c for c in (state.chrony or {}).get("clients", [])}
     rows = []
-    active = 0
+    active = blocked = 0
     for ip, entry in state.clients.data.items():
         c = live.get(ip)
         last_seen = entry["last_seen"]
         ago = now - last_seen
-        is_active = Clients.active(entry, now)
+        is_blocked = bool(entry.get("blocked"))
+        is_active = Clients.active(entry, now) and not is_blocked
         active += is_active
+        blocked += is_blocked
         name, alias, note = entry["name"], entry.get("alias", ""), entry.get("note", "")
         shown = alias or short_name(name) or ip
         text = " ".join((alias, name, ip, note)).lower()
@@ -1212,18 +1338,20 @@ def clients_card(f: Format, state: State, now: float) -> str:
         interval = esc(f.log2(exponent))
         sub = f'<span class="sub">{esc(ip)}</span>' if shown != ip else ""
         sub += f'<span class="sub memo" title="{esc(note)}">{esc(note)}</span>' if note else ""
-        dot = esc(t["active" if is_active else "inactive"] + " · " + t["expected"].format(f.log2(exponent))
-                  if exponent is not None else t["active" if is_active else "inactive"])
+        sub += f'<span class="sub blocked">{esc(t["blocked_note"])}</span>' if is_blocked else ""
+        row_state = "blocked" if is_blocked else "active" if is_active else "inactive"
+        dot = esc(t["blocked"] if is_blocked else
+                  t[row_state] + " · " + t["expected"].format(f.log2(exponent)) if exponent is not None else t[row_state])
         rows.append(
             f'<tr data-name="{esc(shown.lower())}" data-text="{esc(text)}"'
             f' data-addr="{esc(ip)}" data-alias="{esc(alias)}" data-note="{esc(note)}" data-dns="{esc(short_name(name))}"'
-            f' data-state="{"active" if is_active else "inactive"}"'
+            f' data-state="{row_state}" data-blocked="{"1" if is_blocked else ""}"'
             f' data-requests="{"" if all_requests is None else all_requests}"'
             f' data-dropped="{"" if all_dropped is None else all_dropped}"'
             f' data-protocol="{esc(" ".join(protocols).lower())}"'
             f' data-interval="{"" if exponent is None else exponent}"'
             f' data-last="{round(ago)}" data-first="{entry["first_seen"]}">'
-            f'<td><span class="dot{" on" if is_active else ""}" title="{dot}"></span></td>'
+            f'<td><span class="dot{" on" if is_active else " blocked" if is_blocked else ""}" title="{dot}"></span></td>'
             f'<td title="{esc(name or ip)}">{esc(shown)}{sub}</td>'
             f'<td class="proto">{esc(", ".join(protocols)) or t["unknown"]}</td>'
             f'<td class="n">{requests}</td><td class="n opt">{dropped}</td><td class="n opt">{interval}</td>'
@@ -1234,7 +1362,8 @@ def clients_card(f: Format, state: State, now: float) -> str:
     empty = "" if rows else f'<tr><td colspan="9" class="muted">{esc(t["no_clients"])}</td></tr>'
     rows.append(f'<tr class="none" hidden><td colspan="9" class="muted">{esc(t["no_match"])}</td></tr>')
     chips = "".join(f'<button class="chip{" on" if key == "all" else ""}" data-show="{key}">{esc(t[key])} · {n}</button>'
-                    for key, n in (("all", total), ("active", active), ("inactive", total - active)))
+                    for key, n in (("all", total), ("active", active), ("inactive", total - active - blocked))
+                    + ((("blocked", blocked),) if blocked else ()))
     toolbar = (f'<div class="toolbar">{chips}<label class="search">{icon("search")}'
                f'<input id="q" type="search" placeholder="{esc(t["search"])}" autocomplete="off"></label></div>')
     head = (f'<thead><tr><th></th><th data-sort="name">{esc(t["name"])}</th>'
@@ -1261,7 +1390,10 @@ def edit_dialog(t: dict) -> str:
             f'<textarea id="edit-note" maxlength="{NOTE_MAX}" rows="3"></textarea>'
             f'<span class="count" id="edit-count"></span></label><div class="field-error" id="edit-error"></div>'
             f'<div class="buttons"><button type="button" class="button danger" id="edit-forget"'
-            f' data-confirm="{esc(t["forget_confirm"])}">{esc(t["forget"])}</button><span class="spacer"></span>'
+            f' data-confirm="{esc(t["forget_confirm"])}">{esc(t["forget"])}</button>'
+            f'<button type="button" class="button danger" id="edit-block" data-block="{esc(t["block"])}"'
+            f' data-unblock="{esc(t["unblock"])}" data-confirm="{esc(t["block_confirm"])}">{esc(t["block"])}</button>'
+            f'<span class="spacer"></span>'
             f'<button type="button" class="button" id="edit-cancel">{esc(t["cancel"])}</button>'
             f'<button type="submit" class="button filled">{esc(t["save"])}</button></div></form></dialog>')
 
@@ -1416,7 +1548,7 @@ def main() -> None:
     slug = os.environ.get("HOSTNAME", "").replace("-", "_") or None
     # The version from config.yaml, passed by the Supervisor when it builds the image
     version = os.environ.get("APP_VERSION") or None
-    state = State(Clients(STORE), status=STATUS, http_log=HTTP_LOG)
+    state = State(Clients(STORE), status=STATUS, http_log=HTTP_LOG, blocked=BLOCKED, allowed=ALLOWED)
     threading.Thread(target=state.run, daemon=True).start()
     # s6 stops the service with TERM; leave through finally to save the store
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))

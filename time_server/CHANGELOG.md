@@ -2,6 +2,12 @@
 
 All notable changes to this app are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the app uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.1.0] - 2026-11-12
+
+### Added
+
+- Block a client on the page (pencil → Block): it gets no time any more, over NTP (chronyd denies its address, also after every restart) and over HTTP (connections closed unanswered), until it is unblocked with the same button. Blocked clients stay in the list, marked and under a filter of their own, and do not count for *Requests missing*
+
 ## [3.0.0] - 2026-11-12
 
 ### Changed

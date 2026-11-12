@@ -100,6 +100,26 @@ class Networks(unittest.TestCase):
             self.assertEqual(h.read_allowed(Path("/nonexistent/allowed")), [])
 
 
+class BlockedList(unittest.TestCase):
+    def test_read_from_the_page(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "blocked.json"
+            blocked = h.Blocked(path)
+            blocked.refresh()
+            self.assertNotIn("192.0.2.1", blocked)
+            path.write_text('["192.0.2.1", "2001:db8::1"]')
+            blocked.refresh()
+            self.assertIn("192.0.2.1", blocked)
+            self.assertIn("::ffff:192.0.2.1", blocked)
+            self.assertIn("2001:db8:0::1", blocked)
+            self.assertNotIn("192.0.2.2", blocked)
+            # A broken list keeps the addresses known
+            path.write_text("[")
+            with self.assertLogs("time_http", "WARNING"):
+                blocked.refresh()
+            self.assertIn("192.0.2.1", blocked)
+
+
 class Log(unittest.TestCase):
     def test_rate_limit_like_chrony(self) -> None:
         mono = Ticks()
@@ -143,9 +163,11 @@ class Log(unittest.TestCase):
 
 
 class Server(unittest.TestCase):
-    def serve(self, c: h.Clock, networks: str = "127.0.0.0/8", slots: int = h.MAX_CONNECTIONS) -> tuple[int, h.Log]:
+    def serve(self, c: h.Clock, networks: str = "127.0.0.0/8", slots: int = h.MAX_CONNECTIONS,
+              blocked: h.Blocked | None = None) -> tuple[int, h.Log]:
         log = h.Log()
-        server = h.Server(("127.0.0.1", 0), h.handler(c, log), [ipaddress.ip_network(networks)], slots)
+        server = h.Server(("127.0.0.1", 0), h.handler(c, log), [ipaddress.ip_network(networks)], slots,
+                          blocked=blocked or h.Blocked(Path("/nonexistent/blocked.json")))
         threading.Thread(target=server.serve_forever, daemon=True).start()
         self.addCleanup(server.server_close)
         self.addCleanup(server.shutdown)
@@ -197,6 +219,13 @@ class Server(unittest.TestCase):
 
     def test_other_networks_closed_at_once(self) -> None:
         port, _ = self.serve(clock(), networks="192.0.2.0/24")
+        with self.assertRaises((ConnectionError, http.client.HTTPException)):
+            self.ask(port)
+
+    def test_blocked_closed_at_once(self) -> None:
+        blocked = h.Blocked(Path("/nonexistent/blocked.json"))
+        blocked.addresses = frozenset({ipaddress.ip_address("127.0.0.1")})
+        port, _ = self.serve(clock(), blocked=blocked)
         with self.assertRaises((ConnectionError, http.client.HTTPException)):
             self.ask(port)
 

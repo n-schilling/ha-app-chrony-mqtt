@@ -48,7 +48,7 @@ Some devices cannot speak NTP and set their clock from the `Date` header of a we
 
 - `HEAD /`: the same headers without the body, as htpdate asks
 - While chrony is not synchronized (and `serve_when_offline` is off) the answer is `503` without a `Date` header, so no device takes a wrong time; chrony answers NTP requests the same way, flagged as unsynchronized
-- Only the networks of `allowed_networks` get an answer, each address at most once a second on average in bursts of up to 16, like chrony's rate limit for NTP; beyond that `429`, counted as dropped. Other paths answer `404`, other methods `501`
+- Only the networks of `allowed_networks` get an answer, and no client blocked on the page, each address at most once a second on average in bursts of up to 16, like chrony's rate limit for NTP; beyond that `429`, counted as dropped. Other paths answer `404`, other methods `501`
 
 The time is the host clock corrected by chrony's estimate of its offset, the same time chrony hands out over NTP. Over HTTP a client cannot measure the network delay the way NTP does, so expect a few milliseconds of error from the body and up to a second from the header; use NTP where the device can.
 
@@ -72,6 +72,9 @@ stateDiagram-v2
     Active --> Inactive: no request for 3 intervals + 1 h
     Inactive --> Active: next request
     Inactive --> [*]: 30 days without a request (not with a name or note)
+    Active --> Blocked: Block on the page
+    Inactive --> Blocked: Block on the page
+    Blocked --> Active: Unblock, next request
     Active --> Forgotten: Forget on the page
     Inactive --> Forgotten: Forget on the page
     Forgotten --> Active: next request, counted from then on
@@ -82,6 +85,7 @@ The pencil at the end of a row edits the client:
 - **Name**: shown instead of the name from reverse DNS, up to 40 characters; empty shows the reverse DNS name again
 - **Note**: plain text, up to 120 characters, shown under the address and found by the search
 - **Forget**: removes the client from the list. It comes back with its next request, counted from then on.
+- **Block**: the client gets no time any more, over NTP and HTTP, until you unblock it with the same button. chronyd ignores its NTP requests and the HTTP time service closes its connections unanswered. The block takes effect at once, survives restarts and updates, and the client stays in the list, marked in red and under its own filter, until it is unblocked; it does not count for *Requests missing*. Unblocking serves it again where `allowed_networks` serves it. A device whose NTP is redirected to this server on the router gets no time at all while it is blocked.
 
 chrony and the HTTP time service forget their counters and clients when they restart. The page therefore keeps the request totals of the server and of each client, when it first and last saw each client, its request interval, name and note in the app's data folder, so a client that asks only once a day still shows up after an app update with its last request. The list keeps at most 1000 clients: beyond that, addresses that asked only once go first, then those away longest; clients with a name or note stay.
 

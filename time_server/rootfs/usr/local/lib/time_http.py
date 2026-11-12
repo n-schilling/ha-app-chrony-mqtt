@@ -15,7 +15,8 @@ as chrony answers NTP: while chrony is not synchronized, and has no local
 fallback, it sends 503 and no Date header (RFC 9110: no clock, no Date).
 
 Only the networks chrony serves may ask (ALLOWED, written by init-chrony from
-the option allowed_networks), each address at most once a second on average
+the option allowed_networks), and no address blocked on the web page
+(BLOCKED, read every POLL seconds), each address at most once a second on average
 in bursts of BURST, like chrony's rate limit; more is refused with 429 and
 counted as dropped. What each client asked is written to CLIENTS for the web
 page, which keeps it across restarts.
@@ -43,6 +44,7 @@ LOGGER = logging.getLogger("time_http")
 PORT = 8080
 RUN_DIR = Path("/run/time-http")
 ALLOWED = RUN_DIR / "allowed"
+BLOCKED = Path("/run/chrony-web/blocked.json")  # written by the web page
 CLIENTS = RUN_DIR / "clients.json"
 POLL = 2                 # seconds between two reads of chronyc tracking
 STALE = 10 * POLL        # an older read of chrony is no reading: 503
@@ -110,9 +112,11 @@ class Clock:
         # chronyc's correction: positive while the host clock is slow
         return self._clock() + tracking["correction"], tracking
 
-    def run(self) -> None:
+    def run(self, blocked: Blocked | None = None) -> None:
         while True:
             self.refresh()
+            if blocked is not None:
+                blocked.refresh()
             time.sleep(POLL)
 
 
@@ -142,6 +146,40 @@ def admitted(ip: str, networks: list) -> bool:
     if address.version == 6 and address.ipv4_mapped:
         address = address.ipv4_mapped
     return any(address.version == n.version and address in n for n in networks)
+
+
+class Blocked:
+    """The addresses blocked on the web page; their connections are closed
+    unanswered, as chronyd ignores their NTP requests."""
+
+    def __init__(self, path: Path = BLOCKED) -> None:
+        self._path = path
+        self.addresses: frozenset = frozenset()
+        self._failing = False
+
+    def refresh(self) -> None:
+        try:
+            listed = json.loads(self._path.read_text())
+            addresses = frozenset(ipaddress.ip_address(ip) for ip in listed)
+        except FileNotFoundError:
+            # Not written yet: the page writes it once chronyd has the list
+            return
+        except (OSError, ValueError, TypeError) as err:
+            if not self._failing:
+                self._failing = True
+                LOGGER.warning("Cannot read %s (%s); keeping the blocked addresses known", self._path, err)
+            return
+        self._failing = False
+        self.addresses = addresses
+
+    def __contains__(self, ip: str) -> bool:
+        try:
+            address = ipaddress.ip_address(ip)
+        except ValueError:
+            return False
+        if address.version == 6 and address.ipv4_mapped:
+            address = address.ipv4_mapped
+        return address in self.addresses
 
 
 class Log:
@@ -242,8 +280,10 @@ class Server(ThreadingHTTPServer):
     daemon_threads = True
     request_queue_size = MAX_CONNECTIONS
 
-    def __init__(self, address, handler_class, networks: list, slots: int = MAX_CONNECTIONS) -> None:
+    def __init__(self, address, handler_class, networks: list, slots: int = MAX_CONNECTIONS,
+                 blocked: Blocked | None = None) -> None:
         self.networks = networks
+        self.blocked = blocked if blocked is not None else Blocked()
         self._slots = threading.BoundedSemaphore(slots)
         super().__init__(address, handler_class)
 
@@ -253,9 +293,9 @@ class Server(ThreadingHTTPServer):
         self.server_name, self.server_port = "time-server", self.server_address[1]
 
     def verify_request(self, request, client_address) -> bool:
-        # Closed before a thread starts: networks chrony does not serve, and
-        # connections beyond the limit
-        if not admitted(client_address[0], self.networks):
+        # Closed before a thread starts: networks chrony does not serve,
+        # blocked addresses, and connections beyond the limit
+        if not admitted(client_address[0], self.networks) or client_address[0] in self.blocked:
             return False
         return self._slots.acquire(blocking=False)
 
@@ -333,12 +373,13 @@ def log_level(name: str | None) -> int:
 def main() -> None:
     logging.basicConfig(level=log_level(os.environ.get("LOG_LEVEL")),
                         format="[%(asctime)s] %(levelname)s: %(message)s", datefmt="%H:%M:%S", stream=sys.stdout)
-    clock, log = Clock(), Log()
+    clock, log, blocked = Clock(), Log(), Blocked()
     networks = read_allowed(ALLOWED)
-    threading.Thread(target=clock.run, daemon=True).start()
+    blocked.refresh()
+    threading.Thread(target=clock.run, args=(blocked,), daemon=True).start()
     threading.Thread(target=writer, args=(log, service_run()), daemon=True).start()
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
-    server = Server(("0.0.0.0", PORT), handler(clock, log), networks)
+    server = Server(("0.0.0.0", PORT), handler(clock, log), networks, blocked=blocked)
     LOGGER.info("Time over HTTP on port %d", PORT)
     try:
         server.serve_forever()

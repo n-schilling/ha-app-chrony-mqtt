@@ -632,6 +632,105 @@ class Clock(Fixture):
         self.assertNotIn('id="clock"', w.render(state, "de", None, tab="upstream"))
 
 
+class Blocking(Fixture):
+    """Clients blocked on the page: chronyd denies them, the HTTP time service reads the list."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.commands: list[tuple[str, ...]] = []
+        self.blocked = Path(self.tmp.name) / "blocked.json"
+        self.allowed = Path(self.tmp.name) / "allowed"
+        self.allowed.write_text("192.0.2.0/24\n")
+
+    def blocking_state(self, read=None, now: float = NOW, fail: bool = False) -> w.State:
+        def command(*args: str) -> None:
+            if fail:
+                raise subprocess.CalledProcessError(1, "chronyc")
+            self.commands.append(args)
+        state = w.State(w.Clients(self.path), names(), read=read or asking({"192.0.2.6": (8, 60, 30)}),
+                        clock=lambda: now, blocked=self.blocked, allowed=self.allowed, command=command)
+        state.refresh()
+        return state
+
+    def test_block_and_unblock(self) -> None:
+        state = self.blocking_state()
+        self.assertEqual(state.change({"action": "block", "ip": "192.0.2.6"}), 204)
+        self.assertEqual(self.commands, [("deny", "192.0.2.6")])
+        self.assertEqual(json.loads(self.blocked.read_text()), ["192.0.2.6"])
+        self.assertTrue(json.loads(self.path.read_text())["clients"]["192.0.2.6"]["blocked"])
+        # Blocking twice changes nothing
+        self.assertEqual(state.change({"action": "block", "ip": "192.0.2.6"}), 204)
+        self.assertEqual(len(self.commands), 1)
+        self.assertEqual(state.change({"action": "unblock", "ip": "192.0.2.6"}), 204)
+        self.assertEqual(self.commands[-1], ("allow", "192.0.2.6"))
+        self.assertEqual(json.loads(self.blocked.read_text()), [])
+        self.assertNotIn("blocked", state.clients.data["192.0.2.6"])
+
+    def test_unblock_outside_the_served_networks_allows_nothing(self) -> None:
+        self.allowed.write_text("10.0.0.0/8\n")
+        state = self.blocking_state()
+        state.change({"action": "block", "ip": "192.0.2.6"})
+        state.change({"action": "unblock", "ip": "192.0.2.6"})
+        self.assertEqual(self.commands, [("deny", "192.0.2.6")])
+
+    def test_addresses_only(self) -> None:
+        state = self.blocking_state()
+        for ip in ("192.0.2.6\nallow all", "all", "192.0.2.0/24"):
+            with self.assertRaises(ValueError):
+                state.change({"action": "block", "ip": ip})
+        self.assertEqual(state.change({"action": "block", "ip": "192.0.2.99"}), 404)
+        self.assertEqual(self.commands, [])
+
+    def test_chronyc_failure_changes_nothing(self) -> None:
+        state = self.blocking_state(fail=True)
+        with self.assertLogs("chrony_web", "WARNING"):
+            self.assertEqual(state.change({"action": "block", "ip": "192.0.2.6"}), 503)
+        self.assertNotIn("blocked", state.clients.data["192.0.2.6"])
+
+    def test_given_to_every_new_chronyd(self) -> None:
+        state = self.blocking_state()
+        state.change({"action": "block", "ip": "192.0.2.6"})
+        self.commands.clear()
+        state.refresh()
+        self.assertEqual(self.commands, [])
+        state._read = asking({"192.0.2.6": (8, 60, 30)}, run="b")
+        state.refresh()
+        self.assertEqual(self.commands, [("deny", "192.0.2.6")])
+
+    def test_given_after_a_restart_of_the_app(self) -> None:
+        self.blocking_state().change({"action": "block", "ip": "192.0.2.6"})
+        self.commands.clear()
+        self.blocking_state()
+        self.assertEqual(self.commands, [("deny", "192.0.2.6")])
+        self.assertEqual(json.loads(self.blocked.read_text()), ["192.0.2.6"])
+
+    def test_stays_listed_until_unblocked(self) -> None:
+        state = self.blocking_state()
+        state.change({"action": "block", "ip": "192.0.2.6"})
+        self.assertEqual(state.change({"action": "forget", "ip": "192.0.2.6"}), 409)
+        later = self.blocking_state(read=asking({}, run="b"), now=NOW + 60 * DAY)
+        self.assertIn("192.0.2.6", later.clients.data)
+
+    def test_not_counted_for_requests_missing(self) -> None:
+        state = self.blocking_state(read=asking({"192.0.2.6": (8, 60, 30), "192.0.2.7": (8, 60, 30)}))
+        state.change({"action": "block", "ip": "192.0.2.6"})
+        self.assertFalse(state.clients.requests_missing(NOW))
+        state.change({"action": "block", "ip": "192.0.2.7"})
+        self.assertFalse(state.clients.requests_missing(NOW))
+
+    def test_shown_in_the_list(self) -> None:
+        state = self.blocking_state()
+        page = w.render(state, "de", None, tab="clients")
+        self.assertNotIn('data-show="blocked"', page)
+        state.change({"action": "block", "ip": "192.0.2.6"})
+        page = w.render(state, "de", None, tab="clients")
+        self.assertIn('data-state="blocked" data-blocked="1"', page)
+        self.assertIn('<span class="sub blocked">Blockiert: bekommt keine Zeit</span>', page)
+        self.assertIn('<button class="chip" data-show="blocked">Blockiert · 1</button>', page)
+        self.assertIn('<span class="dot blocked" title="Blockiert">', page)
+        self.assertIn('id="edit-block" data-block="Blockieren" data-unblock="Freigeben"', page)
+
+
 class Formatting(unittest.TestCase):
     def test_durations(self) -> None:
         de = w.Format("de")
