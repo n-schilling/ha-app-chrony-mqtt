@@ -2,6 +2,7 @@ version: 2
 updates:
   - package-ecosystem: github-actions
     directory: /
+    target-branch: dev
     schedule:
       interval: weekly
     groups:
@@ -10,5 +11,6 @@ updates:
   # The base image in chrony_ntp/Dockerfile
   - package-ecosystem: docker
     directory: /chrony_ntp
+    target-branch: dev
     schedule:
       interval: weekly
