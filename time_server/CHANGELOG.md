@@ -2,6 +2,12 @@
 
 All notable changes to this app are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the app uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.1.1] - 2026-11-12
+
+### Fixed
+
+- Blocking a client while a new chronyd got the blocked addresses could leave the older list for the HTTP time service in place, so the client still got its time over HTTP until the next change. One change of the blocked addresses runs at a time now
+
 ## [3.1.0] - 2026-11-12
 
 ### Added

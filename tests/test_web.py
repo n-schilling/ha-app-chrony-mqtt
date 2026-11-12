@@ -718,6 +718,29 @@ class Blocking(Fixture):
         state.change({"action": "block", "ip": "192.0.2.7"})
         self.assertFalse(state.clients.requests_missing(NOW))
 
+    def test_an_older_list_never_overwrites_a_newer_one(self) -> None:
+        # A new chronyd gets the list while the page blocks a client
+        state = self.blocking_state()
+        started, release = threading.Event(), threading.Event()
+
+        def slow(*args: str) -> None:
+            self.commands.append(args)
+            if args == ("deny", "192.0.2.6") and not started.is_set():
+                started.set()
+                release.wait(5)
+        state.change({"action": "block", "ip": "192.0.2.6"})
+        state._command = slow
+        state._read = asking({"192.0.2.6": (8, 60, 30), "192.0.2.7": (8, 60, 30)}, run="b")
+        renewing = threading.Thread(target=state.refresh)
+        renewing.start()
+        started.wait(5)
+        blocking = threading.Thread(target=state.change, args=({"action": "block", "ip": "192.0.2.7"},))
+        blocking.start()
+        release.set()
+        renewing.join(5)
+        blocking.join(5)
+        self.assertEqual(json.loads(self.blocked.read_text()), ["192.0.2.6", "192.0.2.7"])
+
     def test_shown_in_the_list(self) -> None:
         state = self.blocking_state()
         page = w.render(state, "de", None, tab="clients")

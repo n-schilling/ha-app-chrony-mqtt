@@ -941,6 +941,9 @@ class State:
         self._command = command
         # The chronyd that knows the blocked addresses
         self._denied_run: str | None = None
+        # One change of the blocked addresses at a time, from chronyc to the
+        # list for HTTP, so an older list never overwrites a newer one
+        self._blocking = threading.Lock()
         self.names = names or Names()
         self._read = read
         self._http_log = http_log
@@ -997,6 +1000,10 @@ class State:
 
     def _deny_all(self, run: str | None) -> None:
         """Gives a new chronyd the blocked addresses; it starts without them."""
+        with self._blocking:
+            self._deny_all_locked(run)
+
+    def _deny_all_locked(self, run: str | None) -> None:
         with self.lock:
             blocked = self.clients.blocked()
         try:
@@ -1023,6 +1030,10 @@ class State:
 
     def block(self, ip: str, on: bool) -> int:
         """Blocks or unblocks a client in chronyd and for HTTP; the HTTP status."""
+        with self._blocking:
+            return self._block_locked(ip, on)
+
+    def _block_locked(self, ip: str, on: bool) -> int:
         with self.lock:
             entry = self.clients.data.get(ip)
             if entry is None:
